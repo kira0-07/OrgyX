@@ -6597,3 +6597,9 @@
 {"level":"info","message":"::ffff:172.64.149.20 - - [16/Mar/2026:00:05:07 +0000] \"POST /api/auth/login HTTP/1.1\" 200 534 \"http://localhost:3000/\" \"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36\"","timestamp":"2026-03-16T00:05:07.675Z"}
 {"level":"info","message":"::ffff:172.64.149.20 - - [16/Mar/2026:00:05:09 +0000] \"GET /api/dashboard HTTP/1.1\" 200 - \"http://localhost:3000/\" \"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36\"","timestamp":"2026-03-16T00:05:09.553Z"}
 {"level":"info","message":"::ffff:172.64.149.20 - - [16/Mar/2026:00:05:09 +0000] \"GET /api/notifications?limit=50 HTTP/1.1\" 200 - \"http://localhost:3000/\" \"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36\"","timestamp":"2026-03-16T00:05:09.740Z"}
+{"level":"info","message":"Server running on port 5001","timestamp":"2026-03-16T00:40:26.365Z"}
+{"level":"info","message":"Environment: development","timestamp":"2026-03-16T00:40:26.381Z"}
+{"level":"info","message":"MongoDB Connected: ac-l2vxmtw-shard-00-01.x7hvzet.mongodb.net","timestamp":"2026-03-16T00:40:26.933Z"}
+{"level":"info","message":"Server running on port 5001","timestamp":"2026-03-16T00:53:03.084Z"}
+{"level":"info","message":"Environment: development","timestamp":"2026-03-16T00:53:03.086Z"}
+{"level":"info","message":"MongoDB Connected: ac-l2vxmtw-shard-00-00.x7hvzet.mongodb.net","timestamp":"2026-03-16T00:53:03.617Z"}
