@@ -91,7 +91,6 @@ app.use(helmet({
 
 
 const allowedOrigins = [
-  "http://localhost:3000",
   "https://orgos-swart.vercel.app"
 ];
 
