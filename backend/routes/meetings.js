@@ -23,7 +23,7 @@ const upload = multer({
 
 router.use(authMiddleware);
 
-// Meeting routes
+// Meeting CRUD
 router.get('/', meetingController.getMeetings);
 router.post('/', meetingController.createMeeting);
 router.get('/:id', meetingController.getMeeting);
@@ -34,10 +34,10 @@ router.post('/:id/cancel', meetingController.cancelMeeting);
 // Room routes
 router.post('/:id/join', meetingController.joinMeeting);
 router.post('/:id/leave', meetingController.leaveMeeting);
-router.post('/:id/end', meetingController.endMeeting); // ← FIX: was missing
+router.post('/:id/end', meetingController.endMeeting);
 router.post('/:id/upload-recording', upload.single('recording'), meetingController.uploadRecording);
 
-// Upload route
+// Manual upload
 router.post('/upload', upload.single('audio'), meetingController.manualUpload);
 
 // Processing status
@@ -54,5 +54,8 @@ router.post('/:id/schedule-followup', meetingController.scheduleFollowup);
 
 // Export to PDF
 router.get('/:id/export', meetingController.exportToPDF);
+
+// ✅ Save manual speaker corrections on transcript
+router.put('/:id/transcript-segments', meetingController.updateTranscriptSegments);
 
 module.exports = router;

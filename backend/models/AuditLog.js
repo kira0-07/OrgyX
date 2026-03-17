@@ -13,12 +13,30 @@ const auditLogSchema = new mongoose.Schema({
   action: {
     type: String,
     required: true,
-    enum: ['login', 'logout', 'password_reset', 'password_change', 'user_create', 'user_update', 'user_delete',
-           'meeting_create', 'meeting_update', 'meeting_delete', 'meeting_join', 'meeting_leave',
-           'task_create', 'task_update', 'task_delete', 'task_complete',
-           'sprint_create', 'sprint_update', 'sprint_complete',
-           'recommendation_acknowledge', 'recommendation_dismiss',
-           'settings_update', 'prompt_update', 'export_data', 'access_denied']
+    enum: [
+      // Auth
+      'login', 'logout', 'password_reset', 'password_change',
+      // User
+      'user_create', 'user_update', 'user_delete',
+      // Meeting — full lifecycle
+      'meeting_create', 'meeting_update', 'meeting_delete',
+      'meeting_join', 'meeting_leave',
+      'meeting_end',       // ← was missing (endMeeting controller)
+      'meeting_cancel',    // ← was missing (cancelMeeting controller)
+      'meeting_upload',    // ← was missing (uploadRecording / manualUpload)
+      'meeting_export',    // ← was missing (exportToPDF)
+      'meeting_followup',  // ← was missing (scheduleFollowup)
+      // Task
+      'task_create', 'task_update', 'task_delete', 'task_complete',
+      // Sprint
+      'sprint_create', 'sprint_update', 'sprint_complete',
+      // Recommendation
+      'recommendation_acknowledge', 'recommendation_dismiss',
+      // System / misc
+      'settings_update', 'prompt_update', 'export_data', 'access_denied',
+      // Transcript corrections (from updateTranscriptSegments)
+      'transcript_correction'  // ← was missing
+    ]
   },
   resourceType: {
     type: String,
@@ -62,7 +80,7 @@ auditLogSchema.index({ resourceType: 1 });
 auditLogSchema.index({ createdAt: -1 });
 auditLogSchema.index({ success: 1 });
 
-// TTL index to automatically delete old logs after 1 year
+// TTL index — auto-delete logs after 1 year
 auditLogSchema.index({ createdAt: 1 }, { expireAfterSeconds: 31536000 });
 
 module.exports = mongoose.model('AuditLog', auditLogSchema);

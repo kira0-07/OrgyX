@@ -15,16 +15,12 @@ const execAsync = promisify(require('child_process').exec);
 
 const logger = winston.createLogger({
   level: 'info',
-  format: winston.format.combine(
-    winston.format.timestamp(),
-    winston.format.json()
-  ),
+  format: winston.format.combine(winston.format.timestamp(), winston.format.json()),
   transports: [new winston.transports.Console()]
 });
 
 const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
 
-// Update processing step
 async function updateStep(meetingId, step, status, message = null, io = null) {
   const meeting = await Meeting.findById(meetingId);
   if (meeting) {
@@ -35,64 +31,43 @@ async function updateStep(meetingId, step, status, message = null, io = null) {
       if (message) stepObj.message = message;
     }
     await meeting.save();
-    if (io) {
-      io.to(meetingId).emit('processing-update', { step, status, message });
-    }
+    if (io) io.to(meetingId).emit('processing-update', { step, status, message });
   }
 }
 
-// Download audio from S3
 async function downloadAudio(audioKey) {
   const url = await getFileUrl(audioKey, 3600);
   const tempDir = '/temp';
-
-  if (!fs.existsSync(tempDir)) {
-    fs.mkdirSync(tempDir, { recursive: true });
-  }
-
+  if (!fs.existsSync(tempDir)) fs.mkdirSync(tempDir, { recursive: true });
   const localPath = path.join(tempDir, `${Date.now()}-${path.basename(audioKey)}`);
   const response = await fetch(url);
   const buffer = await response.arrayBuffer();
   fs.writeFileSync(localPath, Buffer.from(buffer));
-
   return localPath;
 }
 
-// Get audio duration using ffprobe
 function getAudioDuration(filePath) {
   return new Promise((resolve) => {
     ffmpeg.ffprobe(filePath, (err, metadata) => {
-      if (err) {
-        logger.warn(`ffprobe error: ${err.message} — defaulting duration to 0`);
-        return resolve(0);
-      }
+      if (err) { logger.warn(`ffprobe error: ${err.message}`); return resolve(0); }
       const duration = metadata?.format?.duration;
       resolve(typeof duration === 'number' && !isNaN(duration) ? duration : 0);
     });
   });
 }
 
-// Split audio into chunks
 async function splitAudio(filePath, chunkDuration = 600) {
   const outputDir = '/temp/chunks';
-  if (!fs.existsSync(outputDir)) {
-    fs.mkdirSync(outputDir, { recursive: true });
-  }
-
+  if (!fs.existsSync(outputDir)) fs.mkdirSync(outputDir, { recursive: true });
   const baseName = path.basename(filePath, path.extname(filePath));
   const outputPattern = path.join(outputDir, `${baseName}_chunk_%03d.wav`);
-
   return new Promise((resolve, reject) => {
     ffmpeg(filePath)
       .output(outputPattern)
       .audioCodec('pcm_s16le')
       .audioFrequency(16000)
       .audioChannels(1)
-      .outputOptions([
-        `-f segment`,
-        `-segment_time ${chunkDuration}`,
-        `-reset_timestamps 1`
-      ])
+      .outputOptions([`-f segment`, `-segment_time ${chunkDuration}`, `-reset_timestamps 1`])
       .on('end', () => {
         const chunks = fs.readdirSync(outputDir)
           .filter(f => f.startsWith(`${baseName}_chunk_`))
@@ -105,54 +80,141 @@ async function splitAudio(filePath, chunkDuration = 600) {
   });
 }
 
-// Transcribe using Groq Whisper API
 async function transcribeWithGroq(audioPath) {
   try {
-    logger.info(`Transcribing with Groq Whisper: ${audioPath}`);
+    logger.info(`Transcribing: ${audioPath}`);
     const audioStream = fs.createReadStream(audioPath);
     const transcription = await groq.audio.transcriptions.create({
       file: audioStream,
       model: 'whisper-large-v3',
-      response_format: 'text',
+      response_format: 'verbose_json',
       language: 'en',
     });
-    return typeof transcription === 'string' ? transcription : transcription.text || '';
+    return transcription;
   } catch (error) {
     logger.error(`Groq transcription error: ${error.message}`);
     throw error;
   }
 }
 
-// Basic speaker diarization using silence detection
-async function performDiarization(audioPath, numSpeakers) {
-  return new Promise((resolve) => {
-    const segments = [];
-    let currentSpeaker = 0;
-    let lastEndTime = 0;
+// Merge short Groq segments into complete sentences before speaker inference
+function mergeShortSegments(segments, minDuration = 2.0) {
+  if (!segments || segments.length === 0) return [];
+  const merged = [];
+  let current = { ...segments[0] };
 
-    ffmpeg(audioPath)
-      .audioFilters(['silencedetect=noise=-30dB:d=0.5', 'volumedetect'])
-      .outputOptions('-f null')
-      .output('-')
-      .on('stderr', (stderrLine) => {
-        const line = stderrLine.toString();
-        const silenceStart = line.match(/silence_start: ([\d.]+)/);
-        if (silenceStart) {
-          const startTime = lastEndTime;
-          const endTime = parseFloat(silenceStart[1]);
-          segments.push({
-            speaker: `Speaker_${currentSpeaker + 1}`,
-            start: startTime,
-            end: endTime
-          });
-          lastEndTime = endTime;
-          currentSpeaker = (currentSpeaker + 1) % (numSpeakers || 1);
+  for (let i = 1; i < segments.length; i++) {
+    const seg = segments[i];
+    const duration = (current.end || 0) - (current.start || 0);
+    const endsWithPunctuation = /[.!?]$/.test(current.text?.trim() || '');
+
+    if (duration < minDuration || !endsWithPunctuation) {
+      current = {
+        ...current,
+        end: seg.end,
+        text: (current.text || '').trim() + ' ' + (seg.text || '').trim()
+      };
+    } else {
+      merged.push(current);
+      current = { ...seg };
+    }
+  }
+  merged.push(current);
+  return merged;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// FIX: LLM speaker inference with corrected batch index handling
+//
+// Root cause of wrong speakers: the LLM was asked to label segments with
+// GLOBAL indices (e.g. 30, 31, 32 for the second batch) but the prompt
+// showed them as [0], [1], [2] — so the LLM returned index:0,1,2 which
+// never matched globalIdx:30,31,32 → all fell through to round-robin fallback.
+//
+// Fix: always use LOCAL indices [0..batchSize-1] in the prompt AND in
+// the assignment lookup. Map back to the correct allLabeled slot via batchStart.
+// ─────────────────────────────────────────────────────────────────────────────
+async function inferSpeakersWithLLM(segments, attendeeNames) {
+  if (!segments || segments.length === 0) return [];
+
+  // Single attendee — everything belongs to them
+  if (attendeeNames.length === 1) {
+    return segments.map(seg => ({ ...seg, speaker: attendeeNames[0] }));
+  }
+
+  const batchSize = 30;
+  const allLabeled = [];
+
+  for (let batchStart = 0; batchStart < segments.length; batchStart += batchSize) {
+    const batch = segments.slice(batchStart, batchStart + batchSize);
+
+    // ✅ FIX: use LOCAL indices 0..batch.length-1 — matching what the LLM returns
+    const segmentList = batch.map((seg, localIdx) =>
+      `[${localIdx}] ${seg.text?.trim()}`
+    ).join('\n');
+
+    const prompt = `You are analyzing a meeting transcript. The meeting has exactly these attendees (use ONLY these exact names, no titles or roles):
+${attendeeNames.map((n, i) => `- Speaker ${i + 1}: ${n}`).join('\n')}
+
+Rules:
+1. Use ONLY the exact names listed above — never add titles, roles, or designations
+2. Assign each segment to one speaker based on conversation flow and context
+3. Look for: questions followed by answers, topic handoffs, first-person references ("I think", "I'll", "my")
+4. A speaker can have multiple consecutive segments — do not force alternation
+5. If truly uncertain, assign to the speaker who spoke most recently
+
+Segments to label:
+${segmentList}
+
+Return ONLY a valid JSON array (no markdown, no explanation, no extra text):
+[{"index":0,"speaker":"${attendeeNames[0]}"},{"index":1,"speaker":"${attendeeNames[Math.min(1, attendeeNames.length - 1)]}"}]`;
+
+    try {
+      const response = await groq.chat.completions.create({
+        model: 'llama-3.3-70b-versatile',
+        messages: [{ role: 'user', content: prompt }],
+        temperature: 0.0,
+        max_tokens: 2048
+      });
+
+      const content = response.choices[0]?.message?.content || '[]';
+      // Strip any markdown fences the model might still add
+      const clean = content.replace(/```json|```/g, '').trim();
+      let assignments = [];
+      try {
+        assignments = JSON.parse(clean);
+      } catch (parseErr) {
+        // Try to extract JSON array from the response
+        const match = clean.match(/\[[\s\S]*\]/);
+        if (match) {
+          assignments = JSON.parse(match[0]);
         }
-      })
-      .on('end', () => resolve(segments))
-      .on('error', () => resolve([]))
-      .run();
-  });
+      }
+
+      batch.forEach((seg, localIdx) => {
+        // ✅ FIX: look up by LOCAL index — same as what the prompt showed
+        const assignment = assignments.find(a => a.index === localIdx);
+        const assignedName = assignment?.speaker?.trim();
+        // Validate: must be one of the actual attendee names
+        const validName = attendeeNames.includes(assignedName)
+          ? assignedName
+          : attendeeNames[localIdx % attendeeNames.length]; // safe fallback
+        allLabeled.push({ ...seg, speaker: validName });
+      });
+
+    } catch (error) {
+      logger.warn(`LLM speaker inference failed for batch starting at ${batchStart}: ${error.message}`);
+      // Fallback: round-robin within this batch
+      batch.forEach((seg, localIdx) => {
+        allLabeled.push({
+          ...seg,
+          speaker: attendeeNames[(batchStart + localIdx) % attendeeNames.length]
+        });
+      });
+    }
+  }
+
+  return allLabeled;
 }
 
 function formatTime(seconds) {
@@ -161,11 +223,9 @@ function formatTime(seconds) {
   return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
 }
 
-// Process meeting
 async function processMeeting(job) {
   const { meetingId, audioKey } = job.data;
   const io = global.io;
-
   logger.info(`Starting processing for meeting ${meetingId}`);
 
   try {
@@ -178,74 +238,88 @@ async function processMeeting(job) {
     await updateStep(meetingId, 'transcription', 'running', 'Starting transcription', io);
 
     const localAudioPath = await downloadAudio(audioKey);
-
-    // ✅ Safe duration — never NaN
     const rawDuration = await getAudioDuration(localAudioPath);
-    meeting.actualDuration = (rawDuration && !isNaN(rawDuration))
-      ? Math.round(rawDuration / 60)
-      : 0;
+    meeting.actualDuration = (rawDuration && !isNaN(rawDuration)) ? Math.round(rawDuration / 60) : 0;
 
+    let groqResult = null;
     let transcript = '';
-
     const fileSizeMB = fs.statSync(localAudioPath).size / (1024 * 1024);
 
     if (fileSizeMB > 24 || rawDuration > 600) {
-      logger.info('Large file detected, splitting into chunks');
+      logger.info('Large file — splitting into chunks');
       const chunks = await splitAudio(localAudioPath);
       let timeOffset = 0;
+      const allSegments = [];
 
       for (const chunk of chunks) {
-        const chunkText = await transcribeWithGroq(chunk);
-        const lines = chunkText.split('\n');
-        for (const line of lines) {
-          if (line.trim()) {
-            transcript += `[${formatTime(timeOffset)}] ${line}\n`;
-          }
+        const chunkResult = await transcribeWithGroq(chunk);
+        transcript += (chunkResult?.text || '') + '\n';
+        if (chunkResult?.segments) {
+          chunkResult.segments.forEach(seg => {
+            allSegments.push({
+              ...seg,
+              start: (seg.start || 0) + timeOffset,
+              end: (seg.end || 0) + timeOffset
+            });
+          });
         }
         timeOffset += 600;
         try { fs.unlinkSync(chunk); } catch (e) {}
       }
+      groqResult = { text: transcript, segments: allSegments };
     } else {
-      transcript = await transcribeWithGroq(localAudioPath);
+      groqResult = await transcribeWithGroq(localAudioPath);
+      transcript = groqResult?.text || '';
     }
 
     meeting.transcriptRaw = transcript;
     await updateStep(meetingId, 'transcription', 'done', 'Transcription complete', io);
 
-    // Step 3: Diarization
-    await updateStep(meetingId, 'diarization', 'running', 'Detecting speakers', io);
+    // Step 3: Speaker diarization
+    await updateStep(meetingId, 'diarization', 'running', 'Identifying speakers', io);
 
-    const numSpeakers = meeting.attendees.length;
-    const diarizationSegments = await performDiarization(localAudioPath, numSpeakers);
+    // Build attendee name list — firstName + lastName ONLY, no roles/designations
+    const attendeeNames = meeting.attendees
+      .map(a => {
+        const first = (a.user?.firstName || '').trim();
+        const last = (a.user?.lastName || '').trim();
+        return `${first} ${last}`.trim();
+      })
+      .filter(name => name.length > 0);
 
-    const speakerMap = {};
-    meeting.attendees.forEach((attendee, idx) => {
-      const name = attendee.user?.firstName
-        ? `${attendee.user.firstName} ${attendee.user.lastName}`
-        : `Speaker ${idx + 1}`;
-      speakerMap[`Speaker_${idx + 1}`] = name;
-    });
+    logger.info(`Attendees for diarization: ${attendeeNames.join(', ')}`);
 
-    meeting.transcriptSegments = diarizationSegments.map(seg => ({
-      speaker: speakerMap[seg.speaker] || 'Unknown Speaker',
-      startTime: seg.start,
-      endTime: seg.end,
-      text: ''
+    // Prepare segments with consistent field names
+    const rawSegments = (groqResult?.segments || []).map(seg => ({
+      text: seg.text?.trim() || '',
+      startTime: seg.start || 0,
+      endTime: seg.end || 0,
+      start: seg.start || 0,
+      end: seg.end || 0
+    })).filter(seg => seg.text.length > 0);
+
+    const mergedSegments = mergeShortSegments(rawSegments);
+    logger.info(`Raw segments: ${rawSegments.length}, after merging: ${mergedSegments.length}`);
+
+    const labeledSegments = await inferSpeakersWithLLM(mergedSegments, attendeeNames);
+
+    meeting.transcriptSegments = labeledSegments.map(seg => ({
+      speaker: seg.speaker || 'Unknown Speaker',
+      startTime: seg.startTime || seg.start || 0,
+      endTime: seg.endTime || seg.end || 0,
+      text: seg.text || ''
     }));
 
-    await updateStep(meetingId, 'diarization', 'done', 'Speaker detection complete', io);
+    meeting.speakerDiarizationMethod = 'llm';
+    meeting.speakerDiarizationEditable = true;
+
+    logger.info(`Final transcript segments: ${meeting.transcriptSegments.length}`);
+    await updateStep(meetingId, 'diarization', 'done', 'Speaker identification complete', io);
 
     // Step 4: Analysis
     await updateStep(meetingId, 'analysis', 'running', 'Analyzing meeting content', io);
 
-    const promptTemplate = await PromptTemplate.findOne({
-      domain: meeting.domain,
-      isActive: true
-    });
-
-    if (!promptTemplate) {
-      logger.warn(`No prompt template for domain: ${meeting.domain}, using default`);
-    }
+    const promptTemplate = await PromptTemplate.findOne({ domain: meeting.domain, isActive: true });
 
     const analysis = await meetingAnalysisChain(
       transcript,
@@ -278,20 +352,13 @@ async function processMeeting(job) {
     });
     meeting.followUpTopics = analysis.followUpTopics || [];
 
-    // Score attendees
     for (const attendee of meeting.attendees) {
       const name = `${attendee.user?.firstName} ${attendee.user?.lastName}`;
       try {
         const contribution = await scoreAttendeeChain(name, transcript, meeting.domain);
-
-        // ✅ Safe score — never NaN
-        const score = (contribution.score && !isNaN(contribution.score))
-          ? contribution.score
-          : 5;
-
+        const score = (contribution.score && !isNaN(contribution.score)) ? contribution.score : 5;
         attendee.contributionScore = score;
         attendee.keyPoints = contribution.keyPoints || [];
-
         meeting.attendeeContributions = meeting.attendeeContributions || [];
         meeting.attendeeContributions.push({
           user: attendee.user._id,
@@ -308,11 +375,9 @@ async function processMeeting(job) {
 
     // Step 5: Embeddings
     await updateStep(meetingId, 'embedding', 'running', 'Storing embeddings', io);
-
     try {
       const chunks = chunkTranscript(transcript, 300);
       const collection = await chromaClient.getCollection({ name: 'meeting_transcripts' });
-
       for (let i = 0; i < chunks.length; i++) {
         const embedding = await generateEmbedding(chunks[i]);
         await collection.add({
@@ -323,35 +388,26 @@ async function processMeeting(job) {
             meetingId: meetingId.toString(),
             domain: meeting.domain,
             date: meeting.scheduledDate.toISOString(),
-            attendees: meeting.attendees.map(a =>
-              `${a.user?.firstName} ${a.user?.lastName}`).join(', '),
+            attendees: attendeeNames.join(', '),
             chunkIndex: i
           }]
         });
       }
     } catch (e) {
-      logger.warn(`Embedding storage failed: ${e.message}`);
+      logger.warn(`Embedding failed: ${e.message}`);
     }
-
     await updateStep(meetingId, 'embedding', 'done', 'Embeddings stored', io);
 
-    // Update performance for attendees
     for (const attendee of meeting.attendees) {
       try {
         const performance = await Performance.findOne({ user: attendee.user._id });
         if (performance) {
-          performance.meetingStats = performance.meetingStats || {
-            totalMeetings: 0,
-            avgContributionScore: 0
-          };
+          performance.meetingStats = performance.meetingStats || { totalMeetings: 0, avgContributionScore: 0 };
           performance.meetingStats.totalMeetings += 1;
-
           const prevAvg = performance.meetingStats.avgContributionScore || 0;
           const prevCount = performance.meetingStats.totalMeetings - 1;
           const newScore = attendee.contributionScore || 5;
           const newAvg = (prevAvg * prevCount + newScore) / performance.meetingStats.totalMeetings;
-
-          // ✅ Safe avg — never NaN
           performance.meetingStats.avgContributionScore = isNaN(newAvg) ? 5 : newAvg;
           await performance.save();
         }
@@ -360,16 +416,24 @@ async function processMeeting(job) {
       }
     }
 
-    // Sanitize all arrays before save
-    meeting.conclusions = (meeting.conclusions || []).filter(Boolean);
-    meeting.decisions = (meeting.decisions || []).filter(Boolean);
-    meeting.followUpTopics = (meeting.followUpTopics || []).filter(Boolean);
-    meeting.actionItems = (meeting.actionItems || []).filter(item => item && item.task);
-    meeting.attendeeContributions = (meeting.attendeeContributions || []).filter(Boolean);
+    // Use findByIdAndUpdate to avoid Mongoose version conflicts from concurrent jobs
+    await Meeting.findByIdAndUpdate(meetingId, {
+      status: 'ready',
+      transcriptRaw: meeting.transcriptRaw,
+      transcriptSegments: meeting.transcriptSegments,
+      speakerDiarizationMethod: meeting.speakerDiarizationMethod,
+      speakerDiarizationEditable: meeting.speakerDiarizationEditable,
+      actualDuration: meeting.actualDuration,
+      summary: meeting.summary,
+      conclusions: (meeting.conclusions || []).filter(Boolean),
+      decisions: (meeting.decisions || []).filter(Boolean),
+      followUpTopics: (meeting.followUpTopics || []).filter(Boolean),
+      actionItems: (meeting.actionItems || []).filter(item => item && item.task),
+      attendeeContributions: (meeting.attendeeContributions || []).filter(Boolean),
+      attendees: meeting.attendees,
+    }, { new: true });
 
-    meeting.status = 'ready';
     await updateStep(meetingId, 'ready', 'done', 'Meeting processing complete', io);
-    await meeting.save();
 
     await Notification.create({
       user: meeting.host,
@@ -382,40 +446,29 @@ async function processMeeting(job) {
     });
 
     try { fs.unlinkSync(localAudioPath); } catch (e) {}
-
     logger.info(`Meeting ${meetingId} processing complete`);
 
   } catch (error) {
     logger.error(`Processing error for meeting ${meetingId}: ${error.message}`);
-
     try {
       await Meeting.findByIdAndUpdate(meetingId, {
         status: 'completed',
         processingError: error.message,
         $set: { 'processingSteps.$[elem].status': 'failed' }
-      }, {
-        arrayFilters: [{ 'elem.status': 'running' }]
-      });
+      }, { arrayFilters: [{ 'elem.status': 'running' }] });
     } catch (updateError) {
       logger.error(`Failed to update meeting status: ${updateError.message}`);
     }
-
     throw error;
   }
 }
 
-// Create worker
 const worker = new Worker('meeting-processing', processMeeting, {
   connection: { url: process.env.REDIS_URL },
   concurrency: 2
 });
 
-worker.on('completed', (job) => {
-  logger.info(`Job ${job.id} completed`);
-});
-
-worker.on('failed', (job, err) => {
-  logger.error(`Job ${job.id} failed: ${err.message}`);
-});
+worker.on('completed', (job) => logger.info(`Job ${job.id} completed`));
+worker.on('failed', (job, err) => logger.error(`Job ${job.id} failed: ${err.message}`));
 
 module.exports = worker;

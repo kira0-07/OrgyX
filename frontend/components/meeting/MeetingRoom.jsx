@@ -115,19 +115,26 @@ export default function MeetingRoom({ meetingId, user }) {
           console.warn('Join API:', e.message);
         }
 
-        // Socket handlers
+        // ── existing-users: sent to ME when I join, listing who's already in room
+        // I am the INITIATOR for all existing peers
         socketRef.current.on('existing-users', (users) => {
           if (!mounted) return;
           users.forEach(({ userId }) => {
-            if (userId?.toString() === myId) return;
+            if (!userId || userId?.toString() === myId) return;
             createPeer(userId, true, stream);
           });
         });
 
+        // ── user-connected: a NEW person joined AFTER me
+        // They will initiate the offer, so I am NOT the initiator
+        // ✅ FIX: was only showing a toast — now also creates a peer to receive their offer
         socketRef.current.on('user-connected', (userId) => {
           if (!mounted) return;
+          if (!userId || userId?.toString() === myId) return;
           toast.success(`${getParticipantName(userId)} joined`);
           fetchParticipantNames();
+          // Create peer as non-initiator — wait for their offer to arrive
+          createPeer(userId, false, stream);
         });
 
         socketRef.current.on('user-disconnected', (userId) => {
@@ -138,7 +145,13 @@ export default function MeetingRoom({ meetingId, user }) {
 
         socketRef.current.on('offer', ({ offer, userId }) => {
           if (!mounted) return;
-          createPeer(userId, false, stream, offer);
+          // Signal the offer into the existing peer (created above in user-connected)
+          // If peer doesn't exist yet, create it now
+          if (peersRef.current[userId]) {
+            peersRef.current[userId].signal(offer);
+          } else {
+            createPeer(userId, false, stream, offer);
+          }
         });
 
         socketRef.current.on('answer', ({ answer, userId }) => {
@@ -195,7 +208,6 @@ export default function MeetingRoom({ meetingId, user }) {
           router.push(`/meetings/${meetingId}`);
         });
 
-        // ✅ Handle meeting cancelled
         socketRef.current.on('meeting-cancelled', ({ message }) => {
           setMeetingCancelled(true);
           toast.error(message || 'Meeting has been cancelled by the host');
@@ -310,7 +322,6 @@ export default function MeetingRoom({ meetingId, user }) {
         });
         const screenTrack = screenStream.getVideoTracks()[0];
 
-        // Replace video track in all peers
         Object.values(peersRef.current).forEach(peer => {
           try {
             const sender = peer._pc?.getSenders().find(s => s.track?.kind === 'video');
@@ -318,15 +329,11 @@ export default function MeetingRoom({ meetingId, user }) {
           } catch (e) {}
         });
 
-        // Show screen in local preview
         if (localVideoRef.current) {
           localVideoRef.current.srcObject = screenStream;
         }
 
-        screenTrack.onended = () => {
-          stopScreenShare();
-        };
-
+        screenTrack.onended = () => { stopScreenShare(); };
         setIsScreenSharing(true);
       } else {
         stopScreenShare();
@@ -338,7 +345,6 @@ export default function MeetingRoom({ meetingId, user }) {
   };
 
   const stopScreenShare = () => {
-    // Restore camera track
     const cameraTrack = localStreamRef.current?.getVideoTracks()[0];
     if (cameraTrack) {
       Object.values(peersRef.current).forEach(peer => {
@@ -348,7 +354,6 @@ export default function MeetingRoom({ meetingId, user }) {
         } catch (e) {}
       });
     }
-    // Restore camera in local preview
     if (localVideoRef.current && localStreamRef.current) {
       localVideoRef.current.srcObject = localStreamRef.current;
     }
@@ -370,7 +375,6 @@ export default function MeetingRoom({ meetingId, user }) {
   const startRecording = () => {
     if (!localStreamRef.current) return;
     try {
-      // Use audio-only for better compatibility with Groq Whisper
       const audioStream = new MediaStream(localStreamRef.current.getAudioTracks());
       const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
         ? 'audio/webm;codecs=opus'
@@ -386,9 +390,7 @@ export default function MeetingRoom({ meetingId, user }) {
       recorder.onstop = async () => {
         const blob = new Blob(recordingChunksRef.current, { type: 'audio/webm' });
         const fd = new FormData();
-        // Name it .mp3 — Groq accepts webm too
         fd.append('recording', blob, 'meeting-recording.webm');
-
         try {
           toast.loading('Uploading recording for AI processing...', { id: 'upload' });
           await api.post(`/meetings/${meetingId}/upload-recording`, fd, {
@@ -401,7 +403,7 @@ export default function MeetingRoom({ meetingId, user }) {
         }
       };
 
-      recorder.start(1000); // collect chunks every 1s
+      recorder.start(1000);
       mediaRecorderRef.current = recorder;
       socketRef.current?.emit('start-recording', { meetingId });
       setIsRecording(true);
@@ -456,7 +458,6 @@ export default function MeetingRoom({ meetingId, user }) {
     }
   };
 
-  // Show cancelled screen
   if (meetingCancelled) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-slate-950">
@@ -522,16 +523,6 @@ export default function MeetingRoom({ meetingId, user }) {
               </span>
             )}
           </button>
-          {isHost && (
-            <button
-              onClick={handleEndMeeting}
-              disabled={isEndingMeeting}
-              className="bg-red-600 hover:bg-red-700 disabled:opacity-50 text-white px-3 py-1.5 rounded-lg text-sm font-medium flex items-center gap-1.5 transition-colors"
-            >
-              <PhoneOff className="h-4 w-4" />
-              {isEndingMeeting ? 'Ending...' : 'End for All'}
-            </button>
-          )}
         </div>
       </header>
 
@@ -709,6 +700,18 @@ export default function MeetingRoom({ meetingId, user }) {
               <Circle className={cn('h-5 w-5', isRecording && 'fill-current')} />
             </CtrlBtn>
           )}
+          {isHost && (
+            <div className="flex flex-col items-center gap-1">
+              <button
+                onClick={handleEndMeeting}
+                disabled={isEndingMeeting}
+                className="h-12 w-12 rounded-full bg-red-700 hover:bg-red-800 disabled:opacity-50 flex items-center justify-center transition-colors"
+              >
+                <StopCircle className="h-5 w-5 text-white" />
+              </button>
+              <span className="text-xs text-slate-500">End</span>
+            </div>
+          )}
           <div className="flex flex-col items-center gap-1">
             <button
               onClick={leaveMeeting}
@@ -727,7 +730,6 @@ export default function MeetingRoom({ meetingId, user }) {
 // ── Local video tile ──
 function LocalTile({ videoRef, name, isHost, isAudioEnabled, isVideoEnabled,
   isScreenSharing, isHandRaised, isPinned, onPin, onFullscreen, large, thumbnail }) {
-  const initials = name.split(' ').map(n => n[0]).join('').slice(0, 2).toUpperCase();
   return (
     <div className={cn(
       'relative bg-slate-800 rounded-xl overflow-hidden group',
@@ -761,8 +763,8 @@ function LocalTile({ videoRef, name, isHost, isAudioEnabled, isVideoEnabled,
 function RemoteTile({ userId, stream, name, isHandRaised, isPinned,
   onPin, onFullscreen, large, thumbnail }) {
   const videoRef = useRef(null);
-  const initials = name.split(' ').map(n => n[0]).join('').slice(0, 2).toUpperCase();
   const [hasVideo, setHasVideo] = useState(false);
+  const initials = name.split(' ').map(n => n[0]).join('').slice(0, 2).toUpperCase();
 
   useEffect(() => {
     if (videoRef.current && stream) {

@@ -12,7 +12,7 @@ import { ScrollArea } from '@/components/ui/scroll-area';
 import {
   Calendar, Clock, Users, Mic, FileText,
   CheckSquare, ArrowLeft, Download, Plus,
-  Loader2, AlertCircle, StopCircle
+  Loader2, AlertCircle, StopCircle, Pencil, X
 } from 'lucide-react';
 import { format } from 'date-fns';
 import api from '@/lib/axios';
@@ -32,6 +32,17 @@ export default function MeetingDetailPage({ params }) {
   const [processingStatus, setProcessingStatus] = useState(null);
   const [activeTab, setActiveTab] = useState('summary');
 
+  // ── Transcript speaker correction state ──
+  const [transcriptSegments, setTranscriptSegments] = useState([]);
+  const [editingSegmentIdx, setEditingSegmentIdx] = useState(null);
+  const [transcriptHasChanges, setTranscriptHasChanges] = useState(false);
+  const [isSavingTranscript, setIsSavingTranscript] = useState(false);
+
+  const SPEAKER_COLORS = [
+    'text-blue-400', 'text-green-400', 'text-purple-400',
+    'text-yellow-400', 'text-pink-400', 'text-cyan-400',
+  ];
+
   useEffect(() => {
     fetchMeeting();
   }, [params?.id]);
@@ -48,6 +59,7 @@ export default function MeetingDetailPage({ params }) {
     try {
       const response = await api.get(`/meetings/${params.id}`);
       setMeeting(response.data.meeting);
+      setTranscriptSegments(response.data.meeting?.transcriptSegments || []);
       if (response.data.meeting?.status === 'processing') {
         fetchProcessingStatus();
       }
@@ -85,6 +97,37 @@ export default function MeetingDetailPage({ params }) {
     }
   };
 
+  // ── Transcript speaker correction handlers ──
+  const uniqueSpeakers = [...new Set(transcriptSegments.map(s => s.speaker).filter(Boolean))];
+  const speakerColorMap = Object.fromEntries(
+    uniqueSpeakers.map((name, i) => [name, SPEAKER_COLORS[i % SPEAKER_COLORS.length]])
+  );
+
+  const attendeeNameList = (meeting?.attendees || [])
+    .map(a => `${a.user?.firstName || ''} ${a.user?.lastName || ''}`.trim())
+    .filter(Boolean);
+
+  const handleSpeakerChange = (segIdx, newSpeaker) => {
+    setTranscriptSegments(prev =>
+      prev.map((seg, i) => i === segIdx ? { ...seg, speaker: newSpeaker } : seg)
+    );
+    setEditingSegmentIdx(null);
+    setTranscriptHasChanges(true);
+  };
+
+  const handleSaveTranscript = async () => {
+    setIsSavingTranscript(true);
+    try {
+      await api.put(`/meetings/${params.id}/transcript-segments`, { transcriptSegments });
+      toast.success('Speaker corrections saved');
+      setTranscriptHasChanges(false);
+    } catch (error) {
+      toast.error('Failed to save corrections');
+    } finally {
+      setIsSavingTranscript(false);
+    }
+  };
+
   // ── STYLED XLSX EXPORT ──────────────────────────────────────────────────────
   const handleExport = async () => {
     if (!meeting) return;
@@ -92,7 +135,6 @@ export default function MeetingDetailPage({ params }) {
     const loadingToast = toast.loading('Generating Excel report...');
 
     try {
-      // Dynamically load ExcelJS from CDN
       await new Promise((resolve, reject) => {
         if (window.ExcelJS) return resolve();
         const script = document.createElement('script');
@@ -107,7 +149,6 @@ export default function MeetingDetailPage({ params }) {
       wb.creator = 'OrgOS';
       const ws = wb.addWorksheet('Meeting Summary', { views: [{ showGridLines: false }] });
 
-      // ── Palette ──
       const DARK_BG      = '1E1E2E';
       const ACCENT       = '6C63FF';
       const ACCENT_LIGHT = 'EAE8FF';
@@ -125,15 +166,14 @@ export default function MeetingDetailPage({ params }) {
       const RED_DARK     = 'FFB71C1C';
       const HDR_BG       = '3D3A6E';
 
-      // ── Column widths ──
       ws.columns = [
-        { width: 3 },   // A — gutter
-        { width: 22 },  // B — label
-        { width: 36 },  // C — value / task
-        { width: 22 },  // D — owner / key points
-        { width: 16 },  // E — deadline / score
-        { width: 14 },  // F — status / speaking time
-        { width: 3 },   // G — gutter
+        { width: 3 },
+        { width: 22 },
+        { width: 36 },
+        { width: 22 },
+        { width: 16 },
+        { width: 14 },
+        { width: 3 },
       ];
 
       const thinBorder = {
@@ -160,7 +200,6 @@ export default function MeetingDetailPage({ params }) {
         horizontal: h, vertical: v, wrapText: wrap,
       });
 
-      // Helper: set a cell
       const setCell = (row, col, value, opts = {}) => {
         const c = ws.getCell(row, col);
         c.value = value;
@@ -171,39 +210,31 @@ export default function MeetingDetailPage({ params }) {
         return c;
       };
 
-      // Helper: merge + set
       const mergeSet = (r, c1, c2, value, opts = {}) => {
         ws.mergeCells(r, c1, r, c2);
         return setCell(r, c1, value, opts);
       };
 
-      // Helper: section header bar
       const sectionHeader = (r, label) => {
         ws.getRow(r).height = 22;
         mergeSet(r, 1, 7, label, {
           bold: true, size: 9, color: 'FFFFFFFF',
-          fill: ACCENT, align: 'left',
-          border: true,
+          fill: ACCENT, align: 'left', border: true,
         });
       };
 
-      // Helper: spacer row
       const spacer = (r, h = 8, bg = 'FFF8F8FC') => {
         ws.getRow(r).height = h;
         for (let c = 1; c <= 7; c++) ws.getCell(r, c).fill = solidFill(bg);
       };
 
-      // ══════════════════════════════════════════════
-      // HERO HEADER  rows 1–4
-      // ══════════════════════════════════════════════
       spacer(1, 8, DARK_BG);
-
       ws.getRow(2).height = 42;
       mergeSet(2, 1, 7, '📋  Meeting Summary Report', {
         bold: true, size: 18, color: 'FFFFFFFF', fill: DARK_BG, align: 'center',
       });
 
-      const attendeeNames = (meeting.attendees || [])
+      const exportAttendeeNames = (meeting.attendees || [])
         .map(a => a.user ? `${a.user.firstName || ''} ${a.user.lastName || ''}`.trim() : (a.name || String(a)))
         .join('  •  ');
       const meetingDate = meeting.scheduledDate ? format(new Date(meeting.scheduledDate), 'MMM d, yyyy') : '';
@@ -214,12 +245,7 @@ export default function MeetingDetailPage({ params }) {
         `${meeting.name || ''}  •  ${meetingDate}  •  ${meeting.domain || ''}  •  ${duration}`,
         { size: 10, color: 'FFAAAACC', fill: DARK_BG, align: 'center', italic: true }
       );
-
       spacer(4, 8, DARK_BG);
-
-      // ══════════════════════════════════════════════
-      // MEETING DETAILS  rows 5–12
-      // ══════════════════════════════════════════════
       spacer(5, 8, 'FFF8F8FC');
 
       ws.getRow(6).height = 14;
@@ -233,7 +259,7 @@ export default function MeetingDetailPage({ params }) {
         ['Duration',      duration],
         ['Type / Domain', meeting.domain || ''],
         ['Status',        `✅  ${meeting.status || ''}`],
-        ['Attendees',     attendeeNames],
+        ['Attendees',     exportAttendeeNames],
       ];
       infoRows.forEach(([label, value], i) => {
         const r = 7 + i;
@@ -246,10 +272,6 @@ export default function MeetingDetailPage({ params }) {
       });
 
       spacer(13, 10);
-
-      // ══════════════════════════════════════════════
-      // SUMMARY  rows 14–15
-      // ══════════════════════════════════════════════
       sectionHeader(14, '  📝  Summary');
       ws.getRow(15).height = 60;
       setCell(15, 1, '', { fill: 'EAE8FF' });
@@ -259,9 +281,6 @@ export default function MeetingDetailPage({ params }) {
       });
       setCell(15, 7, '', { fill: 'EAE8FF' });
 
-      // ══════════════════════════════════════════════
-      // KEY CONCLUSIONS  rows 16–N
-      // ══════════════════════════════════════════════
       spacer(16, 10);
       sectionHeader(17, '  💡  Key Conclusions');
       const conclusions = meeting.conclusions || [];
@@ -287,9 +306,6 @@ export default function MeetingDetailPage({ params }) {
       }
       let nextRow = conclusionStart + Math.max(conclusions.length, 1);
 
-      // ══════════════════════════════════════════════
-      // DECISIONS
-      // ══════════════════════════════════════════════
       spacer(nextRow, 10); nextRow++;
       sectionHeader(nextRow, '  ⚖️  Decisions'); nextRow++;
       const decisions = meeting.decisions || [];
@@ -314,13 +330,8 @@ export default function MeetingDetailPage({ params }) {
         });
       }
 
-      // ══════════════════════════════════════════════
-      // ACTION ITEMS
-      // ══════════════════════════════════════════════
       spacer(nextRow, 10); nextRow++;
       sectionHeader(nextRow, '  ✅  Action Items'); nextRow++;
-
-      // Table header
       ws.getRow(nextRow).height = 18;
       ['', '#', 'Task', 'Assigned To', 'Deadline', 'Status', ''].forEach((h, i) => {
         const c = ws.getCell(nextRow, i + 1);
@@ -347,8 +358,8 @@ export default function MeetingDetailPage({ params }) {
           const bg = i % 2 === 0 ? WHITE : 'F5F4FF';
           const status = item.status || 'pending';
           let sBg = ORANGE_BG, sClr = ORANGE_DARK;
-          if (status === 'completed')  { sBg = GREEN_BG;  sClr = GREEN_DARK; }
-          if (status === 'in_progress'){ sBg = 'FFE3F2FD'; sClr = 'FF1565C0'; }
+          if (status === 'completed')   { sBg = GREEN_BG;    sClr = GREEN_DARK; }
+          if (status === 'in_progress') { sBg = 'FFE3F2FD';  sClr = 'FF1565C0'; }
           const ownerName = item.owner
             ? `${item.owner.firstName || ''} ${item.owner.lastName || ''}`.trim()
             : '';
@@ -366,9 +377,6 @@ export default function MeetingDetailPage({ params }) {
         });
       }
 
-      // ══════════════════════════════════════════════
-      // FOLLOW-UP TOPICS
-      // ══════════════════════════════════════════════
       spacer(nextRow, 10); nextRow++;
       sectionHeader(nextRow, '  🔁  Follow-up Topics'); nextRow++;
       const followUpTopics = meeting.followUpTopics || [];
@@ -393,12 +401,8 @@ export default function MeetingDetailPage({ params }) {
         });
       }
 
-      // ══════════════════════════════════════════════
-      // ATTENDEE CONTRIBUTIONS
-      // ══════════════════════════════════════════════
       spacer(nextRow, 10); nextRow++;
       sectionHeader(nextRow, '  👥  Attendee Contributions'); nextRow++;
-
       ws.getRow(nextRow).height = 18;
       [['', 1], ['Attendee', 2], ['Score', 3], ['Key Points', 4], ['Speaking Time', 6], ['', 7]].forEach(([h, c]) => {
         const cell = ws.getCell(nextRow, c);
@@ -425,7 +429,7 @@ export default function MeetingDetailPage({ params }) {
           const bg = i % 2 === 0 ? WHITE : 'F5F4FF';
           const score = c.contributionScore ?? c.score ?? 0;
           let sBg = RED_BG, sClr = RED_DARK;
-          if (score >= 8) { sBg = GREEN_BG; sClr = GREEN_DARK; }
+          if (score >= 8) { sBg = GREEN_BG;  sClr = GREEN_DARK; }
           else if (score >= 5) { sBg = ORANGE_BG; sClr = ORANGE_DARK; }
           const keyPoints = Array.isArray(c.keyPoints) ? c.keyPoints.join(' | ') : (c.keyPoints || '');
           setCell(nextRow, 1, '', { fill: bg });
@@ -439,9 +443,6 @@ export default function MeetingDetailPage({ params }) {
         });
       }
 
-      // ══════════════════════════════════════════════
-      // FOOTER
-      // ══════════════════════════════════════════════
       spacer(nextRow, 8); nextRow++;
       ws.getRow(nextRow).height = 18;
       mergeSet(nextRow, 1, 7,
@@ -449,7 +450,6 @@ export default function MeetingDetailPage({ params }) {
         { size: 8, color: 'FFAAAACC', fill: DARK_BG, align: 'center', italic: true }
       );
 
-      // ── Download ──
       const buffer = await wb.xlsx.writeBuffer();
       const blob = new Blob([buffer], {
         type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
@@ -476,24 +476,24 @@ export default function MeetingDetailPage({ params }) {
 
   const getStatusColor = (status) => {
     switch (status) {
-      case 'ready': return 'bg-green-500/20 text-green-400';
-      case 'processing': return 'bg-yellow-500/20 text-yellow-400';
+      case 'ready':     return 'bg-green-500/20 text-green-400';
+      case 'processing':return 'bg-yellow-500/20 text-yellow-400';
       case 'scheduled': return 'bg-blue-500/20 text-blue-400';
-      case 'live': return 'bg-red-500/20 text-red-400';
+      case 'live':      return 'bg-red-500/20 text-red-400';
       case 'cancelled': return 'bg-red-900/20 text-red-700';
       case 'completed': return 'bg-slate-500/20 text-muted-foreground';
-      default: return 'bg-slate-500/20 text-muted-foreground';
+      default:          return 'bg-slate-500/20 text-muted-foreground';
     }
   };
 
   const getDomainColor = (domain) => {
     const colors = {
-      'Sprint Planning': 'bg-blue-500/20 text-blue-400',
-      'Performance Review': 'bg-green-500/20 text-green-400',
-      'Architecture Discussion': 'bg-purple-500/20 text-purple-400',
-      '1:1': 'bg-yellow-500/20 text-yellow-400',
-      'All-Hands': 'bg-red-500/20 text-red-400',
-      'Custom': 'bg-slate-500/20 text-muted-foreground'
+      'Sprint Planning':          'bg-blue-500/20 text-blue-400',
+      'Performance Review':       'bg-green-500/20 text-green-400',
+      'Architecture Discussion':  'bg-purple-500/20 text-purple-400',
+      '1:1':                      'bg-yellow-500/20 text-yellow-400',
+      'All-Hands':                'bg-red-500/20 text-red-400',
+      'Custom':                   'bg-slate-500/20 text-muted-foreground'
     };
     return colors[domain] || colors['Custom'];
   };
@@ -566,7 +566,6 @@ export default function MeetingDetailPage({ params }) {
           </div>
 
           <div className="flex gap-2 flex-wrap">
-            {/* Export XLSX — styled Excel report */}
             {isReady && (
               <Button variant="outline" onClick={handleExport} className="border-slate-700">
                 <Download className="mr-2 h-4 w-4" />
@@ -574,7 +573,6 @@ export default function MeetingDetailPage({ params }) {
               </Button>
             )}
 
-            {/* Join — only when scheduled */}
             {meeting.status === 'scheduled' && (
               <Button
                 onClick={() => router.push(`/meetings/${meeting._id}/room`)}
@@ -585,7 +583,6 @@ export default function MeetingDetailPage({ params }) {
               </Button>
             )}
 
-            {/* Rejoin — only when live */}
             {meeting.status === 'live' && (
               <Button
                 onClick={() => router.push(`/meetings/${meeting._id}/room`)}
@@ -596,7 +593,6 @@ export default function MeetingDetailPage({ params }) {
               </Button>
             )}
 
-            {/* End Meeting — host only, scheduled or live */}
             {(meeting.status === 'live' || meeting.status === 'scheduled') && isHost && (
               <Button
                 onClick={handleEndMeeting}
@@ -611,7 +607,6 @@ export default function MeetingDetailPage({ params }) {
               </Button>
             )}
 
-            {/* View Summary — always visible after meeting ends */}
             {['ready', 'completed', 'processing'].includes(meeting.status) && (
               <Button
                 variant="outline"
@@ -623,7 +618,6 @@ export default function MeetingDetailPage({ params }) {
               </Button>
             )}
 
-            {/* Schedule Follow-up — only when ready */}
             {isReady && (
               <Button
                 onClick={() => router.push(`/meetings/${meeting._id}/schedule-followup`)}
@@ -698,6 +692,7 @@ export default function MeetingDetailPage({ params }) {
                 <TabsTrigger value="action-items">Action Items</TabsTrigger>
               </TabsList>
 
+              {/* SUMMARY TAB */}
               <TabsContent value="summary">
                 <Card className="bg-card border-muted">
                   <CardHeader>
@@ -744,32 +739,83 @@ export default function MeetingDetailPage({ params }) {
                 </Card>
               </TabsContent>
 
+              {/* TRANSCRIPT TAB — with inline speaker correction */}
               <TabsContent value="transcript">
                 <Card className="bg-card border-muted">
                   <CardHeader>
-                    <CardTitle>Transcript</CardTitle>
+                    <div className="flex items-center justify-between">
+                      <CardTitle>Transcript</CardTitle>
+                      {transcriptHasChanges && (
+                        <Button
+                          size="sm"
+                          onClick={handleSaveTranscript}
+                          disabled={isSavingTranscript}
+                          className="bg-blue-600 hover:bg-blue-700"
+                        >
+                          {isSavingTranscript && <Loader2 className="mr-2 h-3 w-3 animate-spin" />}
+                          {isSavingTranscript ? 'Saving...' : 'Save corrections'}
+                        </Button>
+                      )}
+                    </div>
                   </CardHeader>
                   <CardContent>
-                    {meeting.transcriptRaw ? (
-                      <ScrollArea className="h-[400px]">
-                        <div className="space-y-4">
-                          {meeting.transcriptSegments?.length > 0 && meeting.transcriptSegments.some(s => s.text) ? (
-                            meeting.transcriptSegments.map((segment, i) => (
-                              <div key={i} className="p-3 bg-muted/50 rounded-lg">
-                                <div className="flex items-center gap-2 mb-1">
-                                  <span className="font-medium text-blue-400">{segment.speaker}</span>
+                    {transcriptSegments.length > 0 ? (
+                      <div className="space-y-2">
+                        <p className="text-xs text-slate-500 mb-3">
+                          AI has assigned speakers. Click any name to correct it.
+                        </p>
+                        <ScrollArea className="h-[400px]">
+                          <div className="space-y-3 pr-2">
+                            {transcriptSegments.map((seg, i) => (
+                              <div key={i} className="p-3 bg-muted/50 rounded-lg group">
+                                <div className="flex items-center gap-2 mb-1 flex-wrap">
+                                  {editingSegmentIdx === i ? (
+                                    <div className="flex items-center gap-1">
+                                      <select
+                                        autoFocus
+                                        defaultValue={seg.speaker}
+                                        onChange={(e) => handleSpeakerChange(i, e.target.value)}
+                                        className="text-sm bg-slate-700 border border-slate-600 rounded px-2 py-0.5 text-slate-200 focus:outline-none"
+                                      >
+                                        {attendeeNameList.map(name => (
+                                          <option key={name} value={name}>{name}</option>
+                                        ))}
+                                        <option value="Unknown Speaker">Unknown Speaker</option>
+                                      </select>
+                                      <button
+                                        onClick={() => setEditingSegmentIdx(null)}
+                                        className="text-slate-400 hover:text-slate-200 ml-1"
+                                      >
+                                        <X className="h-3 w-3" />
+                                      </button>
+                                    </div>
+                                  ) : (
+                                    <button
+                                      onClick={() => setEditingSegmentIdx(i)}
+                                      className={`flex items-center gap-1 font-medium text-sm hover:opacity-80 ${speakerColorMap[seg.speaker] || 'text-slate-400'}`}
+                                      title="Click to correct speaker"
+                                    >
+                                      {seg.speaker}
+                                      <Pencil className="h-3 w-3 opacity-0 group-hover:opacity-60 transition-opacity" />
+                                    </button>
+                                  )}
                                   <span className="text-xs text-slate-500">
-                                    {Math.floor(segment.startTime / 60)}:{(segment.startTime % 60).toString().padStart(2, '0')}
+                                    {Math.floor((seg.startTime || 0) / 60)}:{((seg.startTime || 0) % 60).toString().padStart(2, '0')}
                                   </span>
                                 </div>
-                                <p className="text-slate-300">{segment.text}</p>
+                                <p className="text-slate-300 text-sm">{seg.text}</p>
                               </div>
-                            ))
-                          ) : (
-                            <div className="p-3 bg-muted/50 rounded-lg">
-                              <p className="text-slate-300 whitespace-pre-wrap">{meeting.transcriptRaw}</p>
-                            </div>
-                          )}
+                            ))}
+                          </div>
+                        </ScrollArea>
+                      </div>
+                    ) : meeting?.transcriptRaw ? (
+                      <ScrollArea className="h-[400px]">
+                        <div className="p-3 bg-muted/50 rounded-lg">
+                          <p className="text-xs text-slate-500 mb-2">
+                            Speaker detection not available — showing raw transcript.
+                          </p>
+                          <p className="text-slate-300 whitespace-pre-wrap text-sm">{meeting.transcriptRaw}</p>
                         </div>
                       </ScrollArea>
                     ) : (
@@ -781,6 +827,7 @@ export default function MeetingDetailPage({ params }) {
                 </Card>
               </TabsContent>
 
+              {/* ATTENDEES TAB */}
               <TabsContent value="attendees">
                 <Card className="bg-card border-muted">
                   <CardHeader>
@@ -800,6 +847,7 @@ export default function MeetingDetailPage({ params }) {
                 </Card>
               </TabsContent>
 
+              {/* ACTION ITEMS TAB */}
               <TabsContent value="action-items">
                 <Card className="bg-card border-muted">
                   <CardHeader>
@@ -838,7 +886,7 @@ export default function MeetingDetailPage({ params }) {
                               )}
                             </div>
                             <Badge className={
-                              item.status === 'completed' ? 'bg-green-500/20 text-green-400' :
+                              item.status === 'completed'   ? 'bg-green-500/20 text-green-400' :
                               item.status === 'in_progress' ? 'bg-blue-500/20 text-blue-400' :
                               'bg-yellow-500/20 text-yellow-400'
                             }>

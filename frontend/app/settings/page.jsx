@@ -24,29 +24,30 @@ const settingsSchema = z.object({
   darkMode: z.boolean().default(true),
 });
 
+// Apply theme to document — single source of truth
+const applyTheme = (isDark) => {
+  const root = document.documentElement;
+  if (isDark) {
+    root.classList.add('dark');
+    root.classList.remove('light');
+    localStorage.setItem('theme', 'dark');
+  } else {
+    root.classList.remove('dark');
+    root.classList.add('light');
+    localStorage.setItem('theme', 'light');
+  }
+};
+
 export default function SettingsPage() {
   const { user, refreshUser } = useAuthStore();
   const { isLoading: authLoading } = useAuth();
   const [isSaving, setIsSaving] = useState(false);
   const [darkModeState, setDarkModeState] = useState(true);
-  const isDark = darkModeState;
-
-  useEffect(() => {
-    const savedTheme = localStorage.getItem('theme');
-    if (savedTheme === 'dark') {
-      document.documentElement.classList.add('dark');
-      setDarkModeState(true);
-    } else if (savedTheme === 'light') {
-      document.documentElement.classList.remove('dark');
-      setDarkModeState(false);
-    }
-  }, []);
 
   const {
     register,
     handleSubmit,
     setValue,
-    watch,
     formState: { errors },
   } = useForm({
     resolver: zodResolver(settingsSchema),
@@ -59,25 +60,42 @@ export default function SettingsPage() {
     },
   });
 
+  // On mount — read from localStorage first, then user preference
+  useEffect(() => {
+    const savedTheme = localStorage.getItem('theme');
+    if (savedTheme) {
+      const isDark = savedTheme === 'dark';
+      setDarkModeState(isDark);
+      applyTheme(isDark);
+    }
+  }, []);
+
+  // When user loads — apply their saved preference
   useEffect(() => {
     if (user) {
       setValue('firstName', user.firstName || '');
       setValue('lastName', user.lastName || '');
       setValue('phone', user.phone || '');
       setValue('timezone', user.timezone || 'UTC');
-      setValue('darkMode', user.darkMode ?? true);
-      setDarkModeState(user.darkMode ?? true);
-      // Apply theme when page loads
-      const theme = user.darkMode ?? true;
-      localStorage.setItem('theme', theme ? 'dark' : 'light');
 
-      if (theme) {
-        document.documentElement.classList.add('dark');
-      } else {
-        document.documentElement.classList.remove('dark');
-      }
+      // Only apply user's DB preference if no localStorage override exists
+      const savedTheme = localStorage.getItem('theme');
+      const isDark = savedTheme
+        ? savedTheme === 'dark'
+        : (user.darkMode ?? true);
+
+      setValue('darkMode', isDark);
+      setDarkModeState(isDark);
+      applyTheme(isDark);
     }
   }, [user, setValue]);
+
+  const handleDarkModeToggle = () => {
+    const newValue = !darkModeState;
+    setDarkModeState(newValue);
+    setValue('darkMode', newValue);
+    applyTheme(newValue); // ← correct: adds/removes both classes
+  };
 
   const onSubmit = async (data) => {
     setIsSaving(true);
@@ -88,10 +106,7 @@ export default function SettingsPage() {
       });
 
       const userId = user?._id || user?.id;
-
-      if (!userId) {
-        throw new Error('User ID not found');
-      }
+      if (!userId) throw new Error('User ID not found');
 
       await api.put(`/users/${userId}`, {
         firstName: data.firstName,
@@ -105,23 +120,6 @@ export default function SettingsPage() {
       toast.error('Failed to update settings');
     } finally {
       setIsSaving(false);
-    }
-  };
-
-  const handleDarkModeToggle = () => {
-    const newValue = !darkModeState;
-    setDarkModeState(newValue);
-    setValue('darkMode', newValue);
-  
-    // Apply theme using globals.css system
-    if (newValue) {
-      // Dark mode
-      document.documentElement.classList.remove('light');
-      localStorage.setItem('theme', 'dark');
-    } else {
-      // Light mode
-      document.documentElement.classList.add('light');
-      localStorage.setItem('theme', 'light');
     }
   };
 
@@ -145,8 +143,9 @@ export default function SettingsPage() {
         </div>
 
         <form onSubmit={handleSubmit(onSubmit)} className="space-y-6">
-          {/* Profile Settings */}
-          <Card className={isDark ? "bg-card border-muted" : "bg-white border-slate-200 text-slate-900"}>
+
+          {/* Profile */}
+          <Card className="bg-card border-muted">
             <CardHeader>
               <CardTitle className="flex items-center gap-2">
                 <User className="h-5 w-5" />
@@ -160,7 +159,7 @@ export default function SettingsPage() {
                   <Input
                     id="firstName"
                     {...register('firstName')}
-                    className={isDark ? "bg-muted border-slate-700" : "bg-white border-slate-300 text-slate-900"}
+                    className="bg-muted border-muted"
                   />
                   {errors.firstName && (
                     <p className="text-sm text-red-400">{errors.firstName.message}</p>
@@ -171,7 +170,7 @@ export default function SettingsPage() {
                   <Input
                     id="lastName"
                     {...register('lastName')}
-                    className={isDark ? "bg-muted border-slate-700" : "bg-white border-slate-300 text-slate-900"}
+                    className="bg-muted border-muted"
                   />
                   {errors.lastName && (
                     <p className="text-sm text-red-400">{errors.lastName.message}</p>
@@ -184,16 +183,16 @@ export default function SettingsPage() {
                   id="email"
                   value={user.email}
                   disabled
-                  className={isDark ? "bg-muted border-slate-700 opacity-50" : "bg-slate-100 border-slate-300 text-slate-600 opacity-80"}
+                  className="bg-muted border-muted opacity-50"
                 />
-                <p className="text-xs text-slate-500">Email cannot be changed</p>
+                <p className="text-xs text-muted-foreground">Email cannot be changed</p>
               </div>
               <div className="space-y-2">
                 <Label htmlFor="phone">Phone</Label>
                 <Input
                   id="phone"
                   {...register('phone')}
-                  className={isDark ? "bg-muted border-slate-700" : "bg-white border-slate-300 text-slate-900"}
+                  className="bg-muted border-muted"
                   placeholder="+1 (555) 000-0000"
                 />
               </div>
@@ -201,7 +200,7 @@ export default function SettingsPage() {
           </Card>
 
           {/* Appearance */}
-          <Card className={isDark ? "bg-card border-muted" : "bg-white border-slate-200 text-slate-900"}>
+          <Card className="bg-card border-muted">
             <CardHeader>
               <CardTitle className="flex items-center gap-2">
                 <Moon className="h-5 w-5" />
@@ -212,13 +211,13 @@ export default function SettingsPage() {
               <div className="flex items-center justify-between">
                 <div>
                   <p className="font-medium">Dark Mode</p>
-                  <p className="text-sm text-slate-500">Use dark theme throughout the app</p>
+                  <p className="text-sm text-muted-foreground">Use dark theme throughout the app</p>
                 </div>
                 <button
                   type="button"
                   onClick={handleDarkModeToggle}
                   className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
-                    darkModeState ? 'bg-blue-600' : 'bg-slate-700'
+                    darkModeState ? 'bg-blue-600' : 'bg-slate-300'
                   }`}
                 >
                   <span
@@ -232,7 +231,7 @@ export default function SettingsPage() {
           </Card>
 
           {/* Regional */}
-          <Card className={isDark ? "bg-card border-muted" : "bg-white border-slate-200 text-slate-900"}>
+          <Card className="bg-card border-muted">
             <CardHeader>
               <CardTitle className="flex items-center gap-2">
                 <Globe className="h-5 w-5" />
@@ -245,9 +244,7 @@ export default function SettingsPage() {
                 <select
                   id="timezone"
                   {...register('timezone')}
-                  className={isDark
-                    ? "w-full px-3 py-2 rounded-md bg-muted border border-slate-700 text-foreground"
-                    : "w-full px-3 py-2 rounded-md bg-white border border-slate-300 text-slate-900"}
+                  className="w-full px-3 py-2 rounded-md bg-muted border border-muted text-foreground"
                 >
                   <option value="UTC">UTC</option>
                   <option value="America/New_York">Eastern Time</option>
@@ -257,6 +254,7 @@ export default function SettingsPage() {
                   <option value="Europe/London">London</option>
                   <option value="Europe/Paris">Paris</option>
                   <option value="Asia/Tokyo">Tokyo</option>
+                  <option value="Asia/Kolkata">India (IST)</option>
                   <option value="Asia/Singapore">Singapore</option>
                   <option value="Australia/Sydney">Sydney</option>
                 </select>
@@ -264,7 +262,6 @@ export default function SettingsPage() {
             </CardContent>
           </Card>
 
-          {/* Save Button */}
           <div className="flex justify-end">
             <Button type="submit" disabled={isSaving}>
               {isSaving ? (

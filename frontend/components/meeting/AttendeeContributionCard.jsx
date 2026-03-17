@@ -76,13 +76,8 @@ export default function AttendeeContributionCard({ attendee, contributions = [] 
 
         <div className="mt-4 grid grid-cols-3 gap-4">
           <div className="flex items-center gap-2">
-            <Mic className="h-4 w-4 text-muted-foreground" />
-            <div>
-              <p className="text-xs text-slate-500">Speaking Time</p>
-              <p className="text-sm font-medium text-foreground">
-                {formatTime(speakingTime)}
-              </p>
-            </div>
+            
+
           </div>
 
           <div className="flex items-center gap-2">

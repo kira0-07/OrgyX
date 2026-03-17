@@ -87,19 +87,25 @@ exports.createMeeting = async (req, res) => {
 
     await meeting.save();
 
-    const notifications = attendeeUsers
-      .filter(u => u._id.toString() !== host)
-      .map(user => ({
-        user: user._id,
-        type: 'meeting_invite',
-        title: `Meeting invitation: ${name}`,
-        message: `You've been invited to ${domain}: ${name}`,
-        link: `/meetings/${meeting._id}`,
-        entityType: 'meeting',
-        entityId: meeting._id
-      }));
-
-    await Notification.insertMany(notifications);
+    // ✅ FIX: Notification failure never crashes createMeeting
+    try {
+      const notifications = attendeeUsers
+        .filter(u => u._id.toString() !== host)
+        .map(user => ({
+          user: user._id,
+          type: 'meeting_invite',
+          title: `Meeting invitation: ${name}`,
+          message: `You've been invited to ${domain}: ${name}`,
+          link: `/meetings/${meeting._id}`,
+          entityType: 'meeting',
+          entityId: meeting._id
+        }));
+      if (notifications.length > 0) {
+        await Notification.insertMany(notifications);
+      }
+    } catch (notifErr) {
+      logger.warn(`Create meeting notification failed: ${notifErr.message}`);
+    }
 
     await AuditLog.create({
       user: host,
@@ -442,24 +448,28 @@ exports.endMeeting = async (req, res) => {
       }
     }
 
-    // Notify attendees
-    const attendeeIds = meeting.attendees
-      .map(a => a.user)
-      .filter(uid => uid.toString() !== req.user.userId);
+    // ✅ FIX: Notification failure never crashes endMeeting
+    try {
+      const attendeeIds = meeting.attendees
+        .map(a => a.user)
+        .filter(uid => uid.toString() !== req.user.userId);
 
-    if (attendeeIds.length > 0) {
-      const notifications = attendeeIds.map(uid => ({
-        user: uid,
-        type: 'meeting_ended',
-        title: `Meeting ended: ${meeting.name}`,
-        message: meeting.recordingUrl
-          ? `"${meeting.name}" has ended. AI summary will be ready shortly.`
-          : `"${meeting.name}" has been ended by the host.`,
-        link: `/meetings/${meeting._id}`,
-        entityType: 'meeting',
-        entityId: meeting._id
-      }));
-      await Notification.insertMany(notifications);
+      if (attendeeIds.length > 0) {
+        const notifications = attendeeIds.map(uid => ({
+          user: uid,
+          type: 'meeting_ended',
+          title: `Meeting ended: ${meeting.name}`,
+          message: meeting.recordingUrl
+            ? `"${meeting.name}" has ended. AI summary will be ready shortly.`
+            : `"${meeting.name}" has been ended by the host.`,
+          link: `/meetings/${meeting._id}`,
+          entityType: 'meeting',
+          entityId: meeting._id
+        }));
+        await Notification.insertMany(notifications);
+      }
+    } catch (notifErr) {
+      logger.warn(`End meeting notification failed: ${notifErr.message}`);
     }
 
     const io = req.app.get('io');
@@ -885,19 +895,25 @@ exports.scheduleFollowup = async (req, res) => {
     parentMeeting.childMeetingIds.push(followUpMeeting._id);
     await parentMeeting.save();
 
-    const notifications = followUpMeeting.attendees
-      .filter(a => a.user.toString() !== req.user.userId)
-      .map(a => ({
-        user: a.user,
-        type: 'follow_up_reminder',
-        title: 'Follow-up meeting scheduled',
-        message: `A follow-up to "${parentMeeting.name}" has been scheduled`,
-        link: `/meetings/${followUpMeeting._id}`,
-        entityType: 'meeting',
-        entityId: followUpMeeting._id
-      }));
-
-    await Notification.insertMany(notifications);
+    // ✅ FIX: Notification failure never crashes scheduleFollowup
+    try {
+      const notifications = followUpMeeting.attendees
+        .filter(a => a.user.toString() !== req.user.userId)
+        .map(a => ({
+          user: a.user,
+          type: 'follow_up_reminder',
+          title: 'Follow-up meeting scheduled',
+          message: `A follow-up to "${parentMeeting.name}" has been scheduled`,
+          link: `/meetings/${followUpMeeting._id}`,
+          entityType: 'meeting',
+          entityId: followUpMeeting._id
+        }));
+      if (notifications.length > 0) {
+        await Notification.insertMany(notifications);
+      }
+    } catch (notifErr) {
+      logger.warn(`Follow-up notification failed: ${notifErr.message}`);
+    }
 
     res.status(201).json({
       success: true,
@@ -1087,20 +1103,25 @@ exports.cancelMeeting = async (req, res) => {
     meeting.status = 'cancelled';
     await meeting.save();
 
-    const notifications = meeting.attendees
-      .filter(a => a.user?.toString() !== req.user.userId)
-      .map(a => ({
-        user: a.user,
-        type: 'meeting_cancelled',
-        title: `Meeting cancelled: ${meeting.name}`,
-        message: `"${meeting.name}" has been cancelled by the host.`,
-        link: `/meetings/history`,
-        entityType: 'meeting',
-        entityId: meeting._id
-      }));
+    // ✅ FIX: Notification failure never crashes cancelMeeting
+    try {
+      const notifications = meeting.attendees
+        .filter(a => a.user?.toString() !== req.user.userId)
+        .map(a => ({
+          user: a.user,
+          type: 'meeting_cancelled',
+          title: `Meeting cancelled: ${meeting.name}`,
+          message: `"${meeting.name}" has been cancelled by the host.`,
+          link: `/meetings/history`,
+          entityType: 'meeting',
+          entityId: meeting._id
+        }));
 
-    if (notifications.length > 0) {
-      await Notification.insertMany(notifications);
+      if (notifications.length > 0) {
+        await Notification.insertMany(notifications);
+      }
+    } catch (notifErr) {
+      logger.warn(`Cancel meeting notification failed: ${notifErr.message}`);
     }
 
     await AuditLog.create({
@@ -1126,6 +1147,68 @@ exports.cancelMeeting = async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Failed to cancel meeting'
+    });
+  }
+};
+
+// ✅ Save manual speaker corrections on transcript segments
+exports.updateTranscriptSegments = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { transcriptSegments } = req.body;
+
+    if (!transcriptSegments || !Array.isArray(transcriptSegments)) {
+      return res.status(400).json({
+        success: false,
+        message: 'transcriptSegments must be an array'
+      });
+    }
+
+    const meeting = await Meeting.findById(id);
+
+    if (!meeting) {
+      return res.status(404).json({
+        success: false,
+        message: 'Meeting not found'
+      });
+    }
+
+    const hostId = meeting.host?.toString();
+    const isAttendee = meeting.attendees?.some(
+      a => a.user?.toString() === req.user.userId
+    );
+    const hasAccess = hostId === req.user.userId || isAttendee || req.user.isAdmin;
+
+    if (!hasAccess) {
+      return res.status(403).json({
+        success: false,
+        message: 'Access denied'
+      });
+    }
+
+    meeting.transcriptSegments = transcriptSegments;
+    await meeting.save();
+
+    await AuditLog.create({
+      user: req.user.userId,
+      action: 'transcript_correction',
+      resourceType: 'meeting',
+      resourceId: id,
+      newValue: { segmentsUpdated: transcriptSegments.length },
+      success: true,
+      ipAddress: req.ip
+    });
+
+    res.json({
+      success: true,
+      message: 'Transcript segments updated',
+      meeting
+    });
+  } catch (error) {
+    logger.error(`Update transcript segments error: ${error.message}`);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to update transcript segments'
     });
   }
 };

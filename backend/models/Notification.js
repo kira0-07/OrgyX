@@ -8,10 +8,22 @@ const notificationSchema = new mongoose.Schema({
   },
   type: {
     type: String,
-    enum: ['meeting_invite', 'meeting_started', 'meeting_ready', 'meeting_cancelled',
-           'task_assigned', 'task_due', 'task_completed',
-           'recommendation_ready', 'performance_alert', 'risk_alert',
-           'system', 'mention', 'follow_up_reminder'],
+    enum: [
+      'meeting_invite',
+      'meeting_started',
+      'meeting_ready',
+      'meeting_ended',
+      'meeting_cancelled',
+      'task_assigned',
+      'task_due',
+      'task_completed',
+      'recommendation_ready',
+      'performance_alert',
+      'risk_alert',
+      'system',
+      'mention',
+      'follow_up_reminder'
+    ],
     required: true
   },
   title: {
