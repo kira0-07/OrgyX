@@ -21,23 +21,46 @@ const llm = new ChatGroq({
   maxTokens: 4096
 });
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Helper: build a clean, speaker-labeled transcript string from transcriptSegments.
+// This is what we pass to ALL LLM calls instead of the raw whisper text.
+//
+// Raw transcript looks like:  "so i was thinking we should..."  (no names)
+// Segment transcript looks like:
+//   "Nancy: so I was thinking we should...\nBob: yeah I agree..."
+//
+// The segment transcript lets the LLM correctly attribute speech to real people.
+// maxChars prevents context window overflow — default 40000 chars (~10k tokens),
+// enough for a 60-minute meeting without truncation issues.
+// ─────────────────────────────────────────────────────────────────────────────
+function buildSegmentTranscript(transcriptSegments, maxChars = 40000) {
+  if (!transcriptSegments || transcriptSegments.length === 0) return '';
+  return transcriptSegments
+    .map(seg => `${seg.speaker}: ${seg.text}`)
+    .join('\n')
+    .substring(0, maxChars);
+}
+
 // Meeting Analysis Chain
-const meetingAnalysisChain = async (transcript, domain, attendees, promptTemplate) => {
+// Now accepts transcriptSegments as an optional 5th argument.
+// If provided, uses speaker-labeled text. Falls back to raw transcript if not.
+const meetingAnalysisChain = async (transcript, domain, attendees, promptTemplate, transcriptSegments = null) => {
   try {
-    // Build messages directly — bypass ChatPromptTemplate entirely
-    // so transcript content with { } never causes template parsing errors
-    const safeTranscript = transcript.substring(0, 15000);
+    // Prefer speaker-labeled segments — LLM gets real names, not Speaker_1/Speaker_2
+    const effectiveTranscript = transcriptSegments && transcriptSegments.length > 0
+      ? buildSegmentTranscript(transcriptSegments, 40000)
+      : transcript.substring(0, 15000);
+
     const attendeeNames = attendees
       .map(a => typeof a === 'string' ? a : `${a.firstName || ''} ${a.lastName || ''}`.trim())
       .join(', ');
 
     const userMessage = promptTemplate.userPromptTemplate
-      .replace('{transcript}', safeTranscript)
+      .replace('{transcript}', effectiveTranscript)
       .replace('{attendees}', attendeeNames)
       .replace('{domain}', domain)
       .replace('{date}', new Date().toISOString());
 
-    // Call LLM directly without template parsing
     const response = await llm.invoke([
       ['system', promptTemplate.systemPrompt],
       ['human', userMessage]
@@ -45,13 +68,11 @@ const meetingAnalysisChain = async (transcript, domain, attendees, promptTemplat
 
     const content = response.content;
 
-    // Parse JSON from response
     const jsonMatch = content.match(/\{[\s\S]*\}/);
     if (jsonMatch) {
       return JSON.parse(jsonMatch[0]);
     }
 
-    // If no JSON found return safe fallback
     return {
       summary: content.substring(0, 500),
       conclusions: [],
@@ -119,7 +140,6 @@ Please write the reasoning for this categorization.`]
     ]);
 
     const chain = prompt.pipe(llm).pipe(new StringOutputParser());
-
     return await chain.invoke({});
   } catch (error) {
     logger.error(`Error in recommendation reasoning chain: ${error.message}`);
@@ -158,19 +178,54 @@ Be concise and professional.`],
 };
 
 // Attendee Contribution Scoring Chain
-const scoreAttendeeChain = async (attendeeName, transcript, domain) => {
+// FIXED: now accepts transcriptSegments so the LLM sees real speaker names.
+// Previously received raw transcript with Speaker_1/Speaker_2 — Groq couldn't
+// find "Nancy" anywhere and gave everyone the same middle score (~5).
+// Now each call gets only the segments where the named attendee actually spoke,
+// plus full context of the whole meeting so relative contribution is clear.
+const scoreAttendeeChain = async (attendeeName, transcript, domain, transcriptSegments = null) => {
   try {
-    const safeTranscript = transcript.substring(0, 8000);
+    let formattedTranscript;
+
+    if (transcriptSegments && transcriptSegments.length > 0) {
+      // Build full speaker-labeled transcript for context
+      const fullTranscript = buildSegmentTranscript(transcriptSegments, 40000);
+
+      // Extract only this attendee's lines so the LLM knows exactly what they said
+      const attendeeLines = transcriptSegments
+        .filter(seg => seg.speaker && seg.speaker.toLowerCase() === attendeeName.toLowerCase())
+        .map(seg => seg.text)
+        .join(' ');
+
+      const attendeeSpeakingTime = transcriptSegments
+        .filter(seg => seg.speaker && seg.speaker.toLowerCase() === attendeeName.toLowerCase())
+        .length;
+
+      const totalSegments = transcriptSegments.length;
+      const speakingPercentage = totalSegments > 0
+        ? ((attendeeSpeakingTime / totalSegments) * 100).toFixed(1)
+        : '0';
+
+      formattedTranscript = `FULL MEETING TRANSCRIPT (speaker-labeled):
+${fullTranscript}
+
+---
+SUMMARY FOR ${attendeeName.toUpperCase()}:
+- Spoke in ${attendeeSpeakingTime} of ${totalSegments} segments (${speakingPercentage}% of meeting)
+- Their exact words: "${attendeeLines.substring(0, 3000)}"`;
+    } else {
+      // Fallback to raw transcript if no segments (should rarely happen after our fixes)
+      formattedTranscript = transcript.substring(0, 12000);
+    }
 
     const userMessage = `Meeting Domain: ${domain}
 
-Attendee: ${attendeeName}
+Attendee to score: ${attendeeName}
 
-Transcript:
-${safeTranscript}`;
+${formattedTranscript}`;
 
     const response = await llm.invoke([
-      ['system', `Score the attendee's participation in this meeting on a scale of 0-10 using this exact rubric:
+      ['system', `Score the named attendee's participation in this meeting on a scale of 0-10 using this exact rubric:
 
 0-2: Attendee was present but said nothing of substance. No questions, no contributions, no decisions influenced.
 3-4: Minimal participation. Responded when directly addressed but did not proactively contribute.
@@ -182,8 +237,10 @@ Rules:
 - Weight speaking time at 30% and content quality at 70%
 - Do not reward talking for the sake of talking
 - Content quality is assessed by: questions asked, insights provided, decisions influenced, action items owned voluntarily, blockers identified
+- Use the speaker summary provided to accurately assess this specific person
+- If the attendee has 0 segments or said nothing, score them 0-2
 
-Return ONLY a JSON object with these fields: score (number 0-10), keyPoints (array of strings), reasoning (string).`],
+Return ONLY a JSON object: {"score": <number 0-10>, "keyPoints": [<string>, ...], "reasoning": "<string>"}`],
       ['human', userMessage]
     ]);
 

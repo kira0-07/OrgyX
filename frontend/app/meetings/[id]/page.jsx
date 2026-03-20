@@ -12,7 +12,8 @@ import { ScrollArea } from '@/components/ui/scroll-area';
 import {
   Calendar, Clock, Users, Mic, FileText,
   CheckSquare, ArrowLeft, Download, Plus,
-  Loader2, AlertCircle, StopCircle, Pencil, X
+  Loader2, AlertCircle, StopCircle, Pencil, X,
+  FileDown
 } from 'lucide-react';
 import { format } from 'date-fns';
 import api from '@/lib/axios';
@@ -128,348 +129,622 @@ export default function MeetingDetailPage({ params }) {
     }
   };
 
-  // ── STYLED XLSX EXPORT ──────────────────────────────────────────────────────
-  const handleExport = async () => {
-    if (!meeting) return;
+  // ── Helper: build shared content sections ──────────────────────────────────
+  const buildExportSections = () => {
+    if (!meeting) return '';
+    const meetingDate = meeting.scheduledDate ? format(new Date(meeting.scheduledDate), 'MMM d, yyyy') : '';
+    const duration = `${meeting.actualDuration || meeting.estimatedDuration || 0} min`;
+    const attendeeNames = (meeting.attendees || [])
+      .map(a => a.user ? `${a.user.firstName || ''} ${a.user.lastName || ''}`.trim() : '')
+      .filter(Boolean)
+      .join(', ');
 
-    const loadingToast = toast.loading('Generating Excel report...');
+    const conclusions = (meeting.conclusions || []).map((c, i) => `  ${i + 1}. ${c}`).join('\n');
+    const decisions = (meeting.decisions || []).map((d, i) => `  ${i + 1}. ${d}`).join('\n');
+    const followUps = (meeting.followUpTopics || []).map((f, i) => `  ${i + 1}. ${f}`).join('\n');
+    const actions = (meeting.actionItems || []).map((item, i) => {
+      const owner = item.owner ? `${item.owner.firstName || ''} ${item.owner.lastName || ''}`.trim() : 'Unassigned';
+      const deadline = item.deadline ? format(new Date(item.deadline), 'MMM d, yyyy') : 'No deadline';
+      return `  ${i + 1}. ${item.task}\n     Owner: ${owner} | Deadline: ${deadline} | Status: ${item.status || 'pending'}`;
+    }).join('\n');
+
+    const transcript = transcriptSegments.length > 0
+      ? transcriptSegments.map(seg => {
+          const mins = Math.floor((seg.startTime || 0) / 60);
+          const secs = ((seg.startTime || 0) % 60).toString().padStart(2, '0');
+          return `  [${mins}:${secs}] ${seg.speaker}: ${seg.text}`;
+        }).join('\n')
+      : (meeting.transcriptRaw || 'No transcript available');
+
+    const contributions = (meeting.attendeeContributions || []).map(c => {
+      const score = c.contributionScore ?? c.score ?? 0;
+      const kp = Array.isArray(c.keyPoints) ? c.keyPoints.join('; ') : (c.keyPoints || '—');
+      return `  ${c.name || 'Unknown'}: Score ${score}/10 | Key Points: ${kp}`;
+    }).join('\n');
+
+    return { meetingDate, duration, attendeeNames, conclusions, decisions, followUps, actions, transcript, contributions };
+  };
+
+  // ── PDF EXPORT ─────────────────────────────────────────────────────────────
+  const handleExportPDF = async () => {
+    if (!meeting) return;
+    const loadingToast = toast.loading('Generating PDF...');
 
     try {
+      // Load jsPDF from CDN
       await new Promise((resolve, reject) => {
-        if (window.ExcelJS) return resolve();
+        if (window.jspdf) return resolve();
         const script = document.createElement('script');
-        script.src = 'https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.4.0/exceljs.min.js';
+        script.src = 'https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js';
         script.onload = resolve;
         script.onerror = reject;
         document.head.appendChild(script);
       });
 
-      const ExcelJS = window.ExcelJS;
-      const wb = new ExcelJS.Workbook();
-      wb.creator = 'OrgOS';
-      const ws = wb.addWorksheet('Meeting Summary', { views: [{ showGridLines: false }] });
+      const { jsPDF } = window.jspdf;
+      const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
 
-      const DARK_BG      = '1E1E2E';
-      const ACCENT       = '6C63FF';
-      const ACCENT_LIGHT = 'EAE8FF';
-      const MID_BG       = 'F5F4FF';
-      const WHITE        = 'FFFFFFFF';
-      const BORDER_CLR   = 'FFD0CEEE';
-      const TEXT_DARK    = 'FF1A1A2E';
-      const TEXT_MID     = 'FF4A4A6A';
-      const TEXT_MUTED   = 'FFAAAACC';
-      const GREEN_BG     = 'FFE6F4EA';
-      const GREEN_DARK   = 'FF2E7D32';
-      const ORANGE_BG    = 'FFFFF3E0';
-      const ORANGE_DARK  = 'FFE65100';
-      const RED_BG       = 'FFFDECEA';
-      const RED_DARK     = 'FFB71C1C';
-      const HDR_BG       = '3D3A6E';
+      const s = buildExportSections();
+      const pageW = 210;
+      const margin = 18;
+      const contentW = pageW - margin * 2;
+      let y = 20;
 
-      ws.columns = [
-        { width: 3 },
-        { width: 22 },
-        { width: 36 },
-        { width: 22 },
-        { width: 16 },
-        { width: 14 },
-        { width: 3 },
-      ];
+      const ACCENT = [108, 99, 255];
+      const DARK = [30, 30, 46];
+      const GREY = [100, 100, 120];
+      const LIGHT = [240, 240, 248];
 
-      const thinBorder = {
-        top:    { style: 'thin', color: { argb: BORDER_CLR } },
-        bottom: { style: 'thin', color: { argb: BORDER_CLR } },
-        left:   { style: 'thin', color: { argb: BORDER_CLR } },
-        right:  { style: 'thin', color: { argb: BORDER_CLR } },
+      const checkPage = (needed = 10) => {
+        if (y + needed > 275) {
+          doc.addPage();
+          y = 20;
+        }
       };
 
-      const solidFill = (hex) => ({
-        type: 'pattern', pattern: 'solid',
-        fgColor: { argb: hex.replace('#', '').length === 6 ? 'FF' + hex.replace('#', '') : hex.replace('#', '') }
-      });
-
-      const font = (opts = {}) => ({
-        name: 'Arial',
-        size: opts.size || 10,
-        bold: opts.bold || false,
-        italic: opts.italic || false,
-        color: { argb: (opts.color || TEXT_DARK).replace('#', '') },
-      });
-
-      const align = (h = 'left', v = 'middle', wrap = false) => ({
-        horizontal: h, vertical: v, wrapText: wrap,
-      });
-
-      const setCell = (row, col, value, opts = {}) => {
-        const c = ws.getCell(row, col);
-        c.value = value;
-        c.font = font(opts);
-        c.alignment = align(opts.align || 'left', 'middle', opts.wrap || false);
-        if (opts.fill) c.fill = solidFill(opts.fill);
-        if (opts.border) c.border = thinBorder;
-        return c;
+      const sectionHeader = (title) => {
+        checkPage(14);
+        doc.setFillColor(...ACCENT);
+        doc.roundedRect(margin, y, contentW, 9, 2, 2, 'F');
+        doc.setTextColor(255, 255, 255);
+        doc.setFontSize(10);
+        doc.setFont('helvetica', 'bold');
+        doc.text(title, margin + 4, y + 6.2);
+        y += 13;
+        doc.setTextColor(...DARK);
+        doc.setFont('helvetica', 'normal');
+        doc.setFontSize(9.5);
       };
 
-      const mergeSet = (r, c1, c2, value, opts = {}) => {
-        ws.mergeCells(r, c1, r, c2);
-        return setCell(r, c1, value, opts);
-      };
-
-      const sectionHeader = (r, label) => {
-        ws.getRow(r).height = 22;
-        mergeSet(r, 1, 7, label, {
-          bold: true, size: 9, color: 'FFFFFFFF',
-          fill: ACCENT, align: 'left', border: true,
+      const bodyText = (text, indent = 0) => {
+        if (!text) return;
+        const lines = doc.splitTextToSize(text, contentW - indent);
+        lines.forEach(line => {
+          checkPage(6);
+          doc.text(line, margin + indent, y);
+          y += 5.5;
         });
+        y += 1;
       };
 
-      const spacer = (r, h = 8, bg = 'FFF8F8FC') => {
-        ws.getRow(r).height = h;
-        for (let c = 1; c <= 7; c++) ws.getCell(r, c).fill = solidFill(bg);
-      };
-
-      spacer(1, 8, DARK_BG);
-      ws.getRow(2).height = 42;
-      mergeSet(2, 1, 7, '📋  Meeting Summary Report', {
-        bold: true, size: 18, color: 'FFFFFFFF', fill: DARK_BG, align: 'center',
-      });
-
-      const exportAttendeeNames = (meeting.attendees || [])
-        .map(a => a.user ? `${a.user.firstName || ''} ${a.user.lastName || ''}`.trim() : (a.name || String(a)))
-        .join('  •  ');
-      const meetingDate = meeting.scheduledDate ? format(new Date(meeting.scheduledDate), 'MMM d, yyyy') : '';
-      const duration = `${meeting.actualDuration || meeting.estimatedDuration || 0} min`;
-
-      ws.getRow(3).height = 20;
-      mergeSet(3, 1, 7,
-        `${meeting.name || ''}  •  ${meetingDate}  •  ${meeting.domain || ''}  •  ${duration}`,
-        { size: 10, color: 'FFAAAACC', fill: DARK_BG, align: 'center', italic: true }
-      );
-      spacer(4, 8, DARK_BG);
-      spacer(5, 8, 'FFF8F8FC');
-
-      ws.getRow(6).height = 14;
-      mergeSet(6, 1, 7, '  MEETING DETAILS', {
-        bold: true, size: 8, color: ACCENT, fill: 'EAE8FF', align: 'left',
-      });
-
-      const infoRows = [
-        ['Title',         meeting.name || ''],
-        ['Date',          meetingDate],
-        ['Duration',      duration],
-        ['Type / Domain', meeting.domain || ''],
-        ['Status',        `✅  ${meeting.status || ''}`],
-        ['Attendees',     exportAttendeeNames],
-      ];
-      infoRows.forEach(([label, value], i) => {
-        const r = 7 + i;
-        ws.getRow(r).height = 18;
-        setCell(r, 1, '', { fill: 'EAE8FF' });
-        setCell(r, 2, label, { bold: true, size: 9, color: 'FF4A4A6A', fill: 'EAE8FF', border: true });
-        ws.mergeCells(r, 3, r, 6);
-        setCell(r, 3, value, { size: 10, color: 'FF1A1A2E', fill: WHITE, border: true, wrap: true });
-        setCell(r, 7, '', { fill: 'EAE8FF' });
-      });
-
-      spacer(13, 10);
-      sectionHeader(14, '  📝  Summary');
-      ws.getRow(15).height = 60;
-      setCell(15, 1, '', { fill: 'EAE8FF' });
-      ws.mergeCells(15, 2, 15, 6);
-      setCell(15, 2, meeting.summary || 'No summary available.', {
-        size: 10, fill: WHITE, border: true, wrap: true, color: 'FF1A1A2E',
-      });
-      setCell(15, 7, '', { fill: 'EAE8FF' });
-
-      spacer(16, 10);
-      sectionHeader(17, '  💡  Key Conclusions');
-      const conclusions = meeting.conclusions || [];
-      const conclusionStart = 18;
-      if (conclusions.length === 0) {
-        ws.getRow(conclusionStart).height = 20;
-        setCell(conclusionStart, 1, '', { fill: 'EAE8FF' });
-        setCell(conclusionStart, 2, '1', { bold: true, size: 11, color: ACCENT, fill: WHITE, align: 'center', border: true });
-        ws.mergeCells(conclusionStart, 3, conclusionStart, 6);
-        setCell(conclusionStart, 3, 'No conclusions recorded.', { size: 10, fill: WHITE, border: true, italic: true, color: 'FF4A4A6A' });
-        setCell(conclusionStart, 7, '', { fill: 'EAE8FF' });
-      } else {
-        conclusions.forEach((txt, i) => {
-          const r = conclusionStart + i;
-          ws.getRow(r).height = 20;
-          const bg = i % 2 === 0 ? WHITE : 'F5F4FF';
-          setCell(r, 1, '', { fill: 'EAE8FF' });
-          setCell(r, 2, `  ${i + 1}`, { bold: true, size: 11, color: ACCENT, fill: bg, align: 'center', border: true });
-          ws.mergeCells(r, 3, r, 6);
-          setCell(r, 3, txt, { size: 10, fill: bg, border: true, wrap: true, color: 'FF1A1A2E' });
-          setCell(r, 7, '', { fill: 'EAE8FF' });
-        });
-      }
-      let nextRow = conclusionStart + Math.max(conclusions.length, 1);
-
-      spacer(nextRow, 10); nextRow++;
-      sectionHeader(nextRow, '  ⚖️  Decisions'); nextRow++;
-      const decisions = meeting.decisions || [];
-      if (decisions.length === 0) {
-        ws.getRow(nextRow).height = 20;
-        setCell(nextRow, 1, '', { fill: 'EAE8FF' });
-        setCell(nextRow, 2, '1', { bold: true, size: 11, color: ACCENT, fill: WHITE, align: 'center', border: true });
-        ws.mergeCells(nextRow, 3, nextRow, 6);
-        setCell(nextRow, 3, 'No decisions recorded.', { size: 10, fill: WHITE, border: true, italic: true, color: 'FF4A4A6A' });
-        setCell(nextRow, 7, '', { fill: 'EAE8FF' });
-        nextRow++;
-      } else {
-        decisions.forEach((txt, i) => {
-          ws.getRow(nextRow).height = 20;
-          const bg = i % 2 === 0 ? WHITE : 'F5F4FF';
-          setCell(nextRow, 1, '', { fill: 'EAE8FF' });
-          setCell(nextRow, 2, `  ${i + 1}`, { bold: true, size: 11, color: ACCENT, fill: bg, align: 'center', border: true });
-          ws.mergeCells(nextRow, 3, nextRow, 6);
-          setCell(nextRow, 3, txt, { size: 10, fill: bg, border: true, wrap: true, color: 'FF1A1A2E' });
-          setCell(nextRow, 7, '', { fill: 'EAE8FF' });
-          nextRow++;
-        });
-      }
-
-      spacer(nextRow, 10); nextRow++;
-      sectionHeader(nextRow, '  ✅  Action Items'); nextRow++;
-      ws.getRow(nextRow).height = 18;
-      ['', '#', 'Task', 'Assigned To', 'Deadline', 'Status', ''].forEach((h, i) => {
-        const c = ws.getCell(nextRow, i + 1);
-        c.value = h;
-        c.font = font({ bold: true, size: 9, color: 'FFFFFFFF' });
-        c.fill = solidFill(HDR_BG);
-        c.alignment = align((['#', 'Status', 'Deadline'].includes(h)) ? 'center' : 'left');
-        c.border = thinBorder;
-      });
-      nextRow++;
-
-      const actionItems = meeting.actionItems || [];
-      if (actionItems.length === 0) {
-        ws.getRow(nextRow).height = 20;
-        setCell(nextRow, 1, '', { fill: WHITE });
-        setCell(nextRow, 2, '', { fill: WHITE, border: true });
-        ws.mergeCells(nextRow, 3, nextRow, 6);
-        setCell(nextRow, 3, 'No action items recorded.', { size: 10, fill: WHITE, border: true, italic: true, color: 'FF4A4A6A' });
-        setCell(nextRow, 7, '', { fill: WHITE });
-        nextRow++;
-      } else {
-        actionItems.forEach((item, i) => {
-          ws.getRow(nextRow).height = 20;
-          const bg = i % 2 === 0 ? WHITE : 'F5F4FF';
-          const status = item.status || 'pending';
-          let sBg = ORANGE_BG, sClr = ORANGE_DARK;
-          if (status === 'completed')   { sBg = GREEN_BG;    sClr = GREEN_DARK; }
-          if (status === 'in_progress') { sBg = 'FFE3F2FD';  sClr = 'FF1565C0'; }
-          const ownerName = item.owner
-            ? `${item.owner.firstName || ''} ${item.owner.lastName || ''}`.trim()
-            : '';
-          const deadline = item.deadline ? format(new Date(item.deadline), 'MMM d, yyyy') : '—';
-          setCell(nextRow, 1, '', { fill: bg });
-          setCell(nextRow, 2, `  ${i + 1}`, { bold: true, size: 10, color: ACCENT, fill: bg, align: 'center', border: true });
-          setCell(nextRow, 3, item.task || '', { size: 10, fill: bg, border: true, wrap: true, color: 'FF1A1A2E' });
-          setCell(nextRow, 4, ownerName, { size: 10, fill: bg, border: true, align: 'center', color: 'FF1A1A2E' });
-          setCell(nextRow, 5, deadline, { size: 10, fill: bg, border: true, align: 'center', italic: true, color: 'FF4A4A6A' });
-          setCell(nextRow, 6, status.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase()), {
-            bold: true, size: 9, color: sClr, fill: sBg, align: 'center', border: true,
+      const labelValue = (label, value) => {
+        checkPage(6);
+        doc.setFont('helvetica', 'bold');
+        doc.setFontSize(9);
+        doc.setTextColor(...GREY);
+        doc.text(label + ':', margin, y);
+        doc.setFont('helvetica', 'normal');
+        doc.setTextColor(...DARK);
+        doc.setFontSize(9.5);
+        const lines = doc.splitTextToSize(value || '—', contentW - 38);
+        doc.text(lines[0], margin + 38, y);
+        y += 5.5;
+        if (lines.length > 1) {
+          lines.slice(1).forEach(l => {
+            checkPage(6);
+            doc.text(l, margin + 38, y);
+            y += 5.5;
           });
-          setCell(nextRow, 7, '', { fill: bg });
-          nextRow++;
-        });
+        }
+      };
+
+      // ── HEADER ──
+      doc.setFillColor(...DARK);
+      doc.rect(0, 0, 210, 32, 'F');
+      doc.setTextColor(255, 255, 255);
+      doc.setFontSize(18);
+      doc.setFont('helvetica', 'bold');
+      doc.text('Meeting Report', margin, 15);
+      doc.setFontSize(10);
+      doc.setFont('helvetica', 'normal');
+      doc.setTextColor(180, 180, 200);
+      doc.text(`${meeting.name || ''}  •  ${s.meetingDate}  •  ${meeting.domain || ''}`, margin, 24);
+      y = 42;
+
+      // ── MEETING DETAILS ──
+      doc.setFillColor(...LIGHT);
+      doc.roundedRect(margin, y, contentW, 36, 3, 3, 'F');
+      y += 6;
+      doc.setTextColor(...DARK);
+      doc.setFontSize(9.5);
+      labelValue('Title', meeting.name);
+      labelValue('Date', s.meetingDate);
+      labelValue('Duration', s.duration);
+      labelValue('Type', meeting.domain);
+      labelValue('Attendees', s.attendeeNames);
+      y += 4;
+
+      // ── SUMMARY ──
+      sectionHeader('Summary');
+      bodyText(meeting.summary || 'No summary available.');
+
+      // ── CONCLUSIONS ──
+      if (meeting.conclusions?.length > 0) {
+        sectionHeader('Key Conclusions');
+        meeting.conclusions.forEach((c, i) => bodyText(`${i + 1}. ${c}`, 4));
       }
 
-      spacer(nextRow, 10); nextRow++;
-      sectionHeader(nextRow, '  🔁  Follow-up Topics'); nextRow++;
-      const followUpTopics = meeting.followUpTopics || [];
-      if (followUpTopics.length === 0) {
-        ws.getRow(nextRow).height = 20;
-        setCell(nextRow, 1, '', { fill: 'EAE8FF' });
-        setCell(nextRow, 2, '1', { bold: true, size: 11, color: ACCENT, fill: WHITE, align: 'center', border: true });
-        ws.mergeCells(nextRow, 3, nextRow, 6);
-        setCell(nextRow, 3, 'No follow-up topics recorded.', { size: 10, fill: WHITE, border: true, italic: true, color: 'FF4A4A6A' });
-        setCell(nextRow, 7, '', { fill: 'EAE8FF' });
-        nextRow++;
-      } else {
-        followUpTopics.forEach((txt, i) => {
-          ws.getRow(nextRow).height = 20;
-          const bg = i % 2 === 0 ? WHITE : 'F5F4FF';
-          setCell(nextRow, 1, '', { fill: 'EAE8FF' });
-          setCell(nextRow, 2, `  ${i + 1}`, { bold: true, size: 11, color: ACCENT, fill: bg, align: 'center', border: true });
-          ws.mergeCells(nextRow, 3, nextRow, 6);
-          setCell(nextRow, 3, txt, { size: 10, fill: bg, border: true, wrap: true, color: 'FF1A1A2E' });
-          setCell(nextRow, 7, '', { fill: 'EAE8FF' });
-          nextRow++;
-        });
+      // ── DECISIONS ──
+      if (meeting.decisions?.length > 0) {
+        sectionHeader('Decisions');
+        meeting.decisions.forEach((d, i) => bodyText(`${i + 1}. ${d}`, 4));
       }
 
-      spacer(nextRow, 10); nextRow++;
-      sectionHeader(nextRow, '  👥  Attendee Contributions'); nextRow++;
-      ws.getRow(nextRow).height = 18;
-      [['', 1], ['Attendee', 2], ['Score', 3], ['Key Points', 4], ['Speaking Time', 6], ['', 7]].forEach(([h, c]) => {
-        const cell = ws.getCell(nextRow, c);
-        cell.value = h;
-        cell.font = font({ bold: true, size: 9, color: 'FFFFFFFF' });
-        cell.fill = solidFill(HDR_BG);
-        cell.alignment = align(['Score', 'Speaking Time'].includes(h) ? 'center' : 'left');
-        cell.border = thinBorder;
-      });
-      ws.mergeCells(nextRow, 4, nextRow, 5);
-      nextRow++;
-
-      const contributions = meeting.attendeeContributions || [];
-      if (contributions.length === 0) {
-        ws.getRow(nextRow).height = 20;
-        setCell(nextRow, 1, '', { fill: WHITE });
-        ws.mergeCells(nextRow, 2, nextRow, 6);
-        setCell(nextRow, 2, 'No contribution data available.', { size: 10, fill: WHITE, border: true, italic: true, color: 'FF4A4A6A' });
-        setCell(nextRow, 7, '', { fill: WHITE });
-        nextRow++;
+      // ── ACTION ITEMS ──
+      sectionHeader('Action Items');
+      if (meeting.actionItems?.length > 0) {
+        meeting.actionItems.forEach((item, i) => {
+          const owner = item.owner ? `${item.owner.firstName || ''} ${item.owner.lastName || ''}`.trim() : 'Unassigned';
+          const deadline = item.deadline ? format(new Date(item.deadline), 'MMM d, yyyy') : 'No deadline';
+          checkPage(14);
+          doc.setFillColor(245, 245, 252);
+          doc.roundedRect(margin, y, contentW, 12, 2, 2, 'F');
+          doc.setFont('helvetica', 'bold');
+          doc.setFontSize(9.5);
+          doc.setTextColor(...DARK);
+          const taskLines = doc.splitTextToSize(`${i + 1}. ${item.task || ''}`, contentW - 8);
+          doc.text(taskLines[0], margin + 4, y + 4.5);
+          doc.setFont('helvetica', 'normal');
+          doc.setFontSize(8.5);
+          doc.setTextColor(...GREY);
+          doc.text(`Owner: ${owner}  |  Due: ${deadline}  |  Status: ${(item.status || 'pending').replace(/_/g, ' ')}`, margin + 4, y + 9.5);
+          y += 15;
+        });
       } else {
-        contributions.forEach((c, i) => {
-          ws.getRow(nextRow).height = 22;
-          const bg = i % 2 === 0 ? WHITE : 'F5F4FF';
+        bodyText('No action items recorded.');
+      }
+
+      // ── FOLLOW-UP TOPICS ──
+      if (meeting.followUpTopics?.length > 0) {
+        sectionHeader('Follow-up Topics');
+        meeting.followUpTopics.forEach((f, i) => bodyText(`${i + 1}. ${f}`, 4));
+      }
+
+      // ── ATTENDEE CONTRIBUTIONS ──
+      if (meeting.attendeeContributions?.length > 0) {
+        sectionHeader('Attendee Contributions');
+        meeting.attendeeContributions.forEach(c => {
           const score = c.contributionScore ?? c.score ?? 0;
-          let sBg = RED_BG, sClr = RED_DARK;
-          if (score >= 8) { sBg = GREEN_BG;  sClr = GREEN_DARK; }
-          else if (score >= 5) { sBg = ORANGE_BG; sClr = ORANGE_DARK; }
-          const keyPoints = Array.isArray(c.keyPoints) ? c.keyPoints.join(' | ') : (c.keyPoints || '');
-          setCell(nextRow, 1, '', { fill: bg });
-          setCell(nextRow, 2, `  ${c.name || ''}`, { bold: true, size: 10, fill: bg, border: true, color: 'FF1A1A2E' });
-          setCell(nextRow, 3, score, { bold: true, size: 11, color: sClr, fill: sBg, align: 'center', border: true });
-          ws.mergeCells(nextRow, 4, nextRow, 5);
-          setCell(nextRow, 4, keyPoints, { size: 9, fill: bg, border: true, wrap: true, color: 'FF4A4A6A' });
-          setCell(nextRow, 6, c.speakingTime || '—', { size: 9, fill: bg, border: true, align: 'center', color: 'FF4A4A6A' });
-          setCell(nextRow, 7, '', { fill: bg });
-          nextRow++;
+          const kp = Array.isArray(c.keyPoints) ? c.keyPoints.join('; ') : (c.keyPoints || '—');
+          checkPage(12);
+          const barColor = score >= 8 ? [46, 125, 50] : score >= 5 ? [230, 81, 0] : [183, 28, 28];
+          doc.setFillColor(245, 245, 252);
+          doc.roundedRect(margin, y, contentW, 11, 2, 2, 'F');
+          doc.setFont('helvetica', 'bold');
+          doc.setFontSize(9.5);
+          doc.setTextColor(...DARK);
+          doc.text(c.name || 'Unknown', margin + 4, y + 4.5);
+          doc.setFillColor(...barColor);
+          doc.roundedRect(margin + contentW - 22, y + 2, (score / 10) * 18, 7, 1, 1, 'F');
+          doc.setTextColor(255, 255, 255);
+          doc.setFontSize(8);
+          doc.text(`${score}/10`, margin + contentW - 21, y + 7);
+          doc.setFont('helvetica', 'normal');
+          doc.setFontSize(8);
+          doc.setTextColor(...GREY);
+          const kpLines = doc.splitTextToSize(`Key Points: ${kp}`, contentW - 30);
+          doc.text(kpLines[0], margin + 4, y + 9);
+          y += 14;
         });
       }
 
-      spacer(nextRow, 8); nextRow++;
-      ws.getRow(nextRow).height = 18;
-      mergeSet(nextRow, 1, 7,
-        'Generated by OrgOS  •  AI-Powered Organization Operating System',
-        { size: 8, color: 'FFAAAACC', fill: DARK_BG, align: 'center', italic: true }
-      );
+      // ── TRANSCRIPT ──
+      sectionHeader('Transcript');
+      if (transcriptSegments.length > 0) {
+        transcriptSegments.forEach(seg => {
+          const mins = Math.floor((seg.startTime || 0) / 60);
+          const secs = ((seg.startTime || 0) % 60).toString().padStart(2, '0');
+          checkPage(12);
+          doc.setFont('helvetica', 'bold');
+          doc.setFontSize(8.5);
+          doc.setTextColor(...ACCENT);
+          doc.text(`${seg.speaker}  `, margin, y);
+          const spkW = doc.getTextWidth(`${seg.speaker}  `);
+          doc.setFont('helvetica', 'normal');
+          doc.setTextColor(...GREY);
+          doc.text(`[${mins}:${secs}]`, margin + spkW, y);
+          y += 4.5;
+          doc.setTextColor(...DARK);
+          doc.setFontSize(9);
+          const lines = doc.splitTextToSize(seg.text || '', contentW - 4);
+          lines.forEach(line => {
+            checkPage(5);
+            doc.text(line, margin + 2, y);
+            y += 4.8;
+          });
+          y += 1;
+        });
+      } else if (meeting.transcriptRaw) {
+        const rawLines = doc.splitTextToSize(meeting.transcriptRaw, contentW);
+        rawLines.forEach(line => {
+          checkPage(5);
+          doc.setFontSize(9);
+          doc.setTextColor(...DARK);
+          doc.text(line, margin, y);
+          y += 4.8;
+        });
+      } else {
+        bodyText('No transcript available.');
+      }
 
-      const buffer = await wb.xlsx.writeBuffer();
-      const blob = new Blob([buffer], {
-        type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      // ── FOOTER on each page ──
+      const totalPages = doc.internal.getNumberOfPages();
+      for (let i = 1; i <= totalPages; i++) {
+        doc.setPage(i);
+        doc.setFillColor(...DARK);
+        doc.rect(0, 285, 210, 12, 'F');
+        doc.setTextColor(150, 150, 170);
+        doc.setFontSize(7.5);
+        doc.setFont('helvetica', 'normal');
+        doc.text('Generated by OrgOS  •  AI-Powered Organization Operating System', margin, 292);
+        doc.text(`Page ${i} of ${totalPages}`, 210 - margin, 292, { align: 'right' });
+      }
+
+      const safeName = (meeting.name || 'meeting').replace(/[^a-z0-9]/gi, '_').toLowerCase();
+      doc.save(`${safeName}_report.pdf`);
+      toast.dismiss(loadingToast);
+      toast.success('PDF exported!');
+    } catch (err) {
+      console.error('PDF export failed:', err);
+      toast.dismiss(loadingToast);
+      toast.error('PDF export failed. Please try again.');
+    }
+  };
+
+  // ── DOCX EXPORT ────────────────────────────────────────────────────────────
+  const handleExportDOCX = async () => {
+    if (!meeting) return;
+    const loadingToast = toast.loading('Generating DOCX...');
+
+    try {
+      // Load docx library from CDN — try multiple sources for reliability
+      await new Promise((resolve, reject) => {
+        if (window.docx && window.docx.Document) return resolve();
+        // Remove any previously failed script tag
+        const existing = document.getElementById('docx-cdn');
+        if (existing) existing.remove();
+        const script = document.createElement('script');
+        script.id = 'docx-cdn';
+        script.src = 'https://unpkg.com/docx@8.2.2/build/index.umd.js';
+        script.onload = () => {
+          // unpkg exposes as window.docx
+          if (window.docx && window.docx.Document) return resolve();
+          reject(new Error('docx library loaded but Document not found on window.docx'));
+        };
+        script.onerror = () => {
+          // Fallback to cdnjs
+          const s2 = document.createElement('script');
+          s2.src = 'https://cdnjs.cloudflare.com/ajax/libs/docx/7.8.2/docx.umd.min.js';
+          s2.onload = () => resolve();
+          s2.onerror = () => reject(new Error('Failed to load docx library from all CDN sources'));
+          document.head.appendChild(s2);
+        };
+        document.head.appendChild(script);
       });
+
+      const docxLib = window.docx;
+      if (!docxLib || !docxLib.Document) {
+        throw new Error('docx library not available — please check your internet connection and try again');
+      }
+
+      const {
+        Document, Packer, Paragraph, TextRun, Table, TableRow, TableCell,
+        HeadingLevel, AlignmentType, BorderStyle, WidthType, ShadingType,
+        LevelFormat, VerticalAlign, PageNumber, Header, Footer
+      } = docxLib;
+
+      const s = buildExportSections();
+      const ACCENT_COLOR = '6C63FF';
+      const DARK_COLOR = '1E1E2E';
+      const GREY_COLOR = '6B7280';
+      const LIGHT_BG = 'F0F0F8';
+
+      const border = { style: BorderStyle.SINGLE, size: 1, color: 'D0CEEE' };
+      const borders = { top: border, bottom: border, left: border, right: border };
+      const noBorders = {
+        top: { style: BorderStyle.NONE, size: 0, color: 'FFFFFF' },
+        bottom: { style: BorderStyle.NONE, size: 0, color: 'FFFFFF' },
+        left: { style: BorderStyle.NONE, size: 0, color: 'FFFFFF' },
+        right: { style: BorderStyle.NONE, size: 0, color: 'FFFFFF' },
+      };
+
+      const sectionHeading = (text) => new Paragraph({
+        spacing: { before: 280, after: 100 },
+        shading: { fill: ACCENT_COLOR, type: ShadingType.CLEAR },
+        children: [
+          new TextRun({
+            text,
+            bold: true,
+            color: 'FFFFFF',
+            size: 22,
+            font: 'Arial',
+          })
+        ],
+        indent: { left: 120, right: 120 },
+      });
+
+      const bodyPara = (text, opts = {}) => new Paragraph({
+        spacing: { before: 60, after: 60 },
+        children: [
+          new TextRun({
+            text: text || '',
+            size: 20,
+            font: 'Arial',
+            color: opts.muted ? GREY_COLOR : DARK_COLOR,
+            italics: opts.italic || false,
+            bold: opts.bold || false,
+          })
+        ],
+        indent: opts.indent ? { left: opts.indent } : undefined,
+      });
+
+      const numberedItem = (text, num) => new Paragraph({
+        spacing: { before: 80, after: 80 },
+        indent: { left: 360, hanging: 280 },
+        children: [
+          new TextRun({ text: `${num}.  `, bold: true, color: ACCENT_COLOR, size: 20, font: 'Arial' }),
+          new TextRun({ text: text || '', size: 20, font: 'Arial', color: DARK_COLOR }),
+        ]
+      });
+
+      const infoTable = (rows) => new Table({
+        width: { size: 9360, type: WidthType.DXA },
+        columnWidths: [2200, 7160],
+        rows: rows.map(([label, value]) => new TableRow({
+          children: [
+            new TableCell({
+              borders,
+              width: { size: 2200, type: WidthType.DXA },
+              shading: { fill: LIGHT_BG, type: ShadingType.CLEAR },
+              margins: { top: 80, bottom: 80, left: 120, right: 120 },
+              children: [new Paragraph({ children: [new TextRun({ text: label, bold: true, size: 18, color: GREY_COLOR, font: 'Arial' })] })]
+            }),
+            new TableCell({
+              borders,
+              width: { size: 7160, type: WidthType.DXA },
+              margins: { top: 80, bottom: 80, left: 120, right: 120 },
+              children: [new Paragraph({ children: [new TextRun({ text: value || '—', size: 20, font: 'Arial', color: DARK_COLOR })] })]
+            }),
+          ]
+        }))
+      });
+
+      const actionTable = (items) => {
+        if (!items?.length) return bodyPara('No action items recorded.', { muted: true, italic: true });
+        return new Table({
+          width: { size: 9360, type: WidthType.DXA },
+          columnWidths: [3800, 2000, 1800, 1760],
+          rows: [
+            new TableRow({
+              tableHeader: true,
+              children: ['Task', 'Assigned To', 'Deadline', 'Status'].map(h =>
+                new TableCell({
+                  borders,
+                  shading: { fill: '3D3A6E', type: ShadingType.CLEAR },
+                  margins: { top: 80, bottom: 80, left: 120, right: 120 },
+                  children: [new Paragraph({ children: [new TextRun({ text: h, bold: true, color: 'FFFFFF', size: 18, font: 'Arial' })] })]
+                })
+              )
+            }),
+            ...items.map((item, i) => {
+              const owner = item.owner ? `${item.owner.firstName || ''} ${item.owner.lastName || ''}`.trim() : 'Unassigned';
+              const deadline = item.deadline ? format(new Date(item.deadline), 'MMM d, yyyy') : '—';
+              const statusColor = item.status === 'completed' ? '2E7D32' : item.status === 'in_progress' ? '1565C0' : 'E65100';
+              const bg = i % 2 === 0 ? 'FFFFFF' : 'F5F4FF';
+              return new TableRow({
+                children: [
+                  new TableCell({ borders, width: { size: 3800, type: WidthType.DXA }, shading: { fill: bg, type: ShadingType.CLEAR }, margins: { top: 80, bottom: 80, left: 120, right: 120 }, children: [new Paragraph({ children: [new TextRun({ text: item.task || '', size: 19, font: 'Arial', color: DARK_COLOR })] })] }),
+                  new TableCell({ borders, width: { size: 2000, type: WidthType.DXA }, shading: { fill: bg, type: ShadingType.CLEAR }, margins: { top: 80, bottom: 80, left: 120, right: 120 }, children: [new Paragraph({ children: [new TextRun({ text: owner, size: 18, font: 'Arial', color: DARK_COLOR })] })] }),
+                  new TableCell({ borders, width: { size: 1800, type: WidthType.DXA }, shading: { fill: bg, type: ShadingType.CLEAR }, margins: { top: 80, bottom: 80, left: 120, right: 120 }, children: [new Paragraph({ children: [new TextRun({ text: deadline, size: 18, font: 'Arial', color: GREY_COLOR, italics: true })] })] }),
+                  new TableCell({ borders, width: { size: 1760, type: WidthType.DXA }, shading: { fill: bg, type: ShadingType.CLEAR }, margins: { top: 80, bottom: 80, left: 120, right: 120 }, children: [new Paragraph({ children: [new TextRun({ text: (item.status || 'pending').replace(/_/g, ' '), size: 18, font: 'Arial', bold: true, color: statusColor })] })] }),
+                ]
+              });
+            })
+          ]
+        });
+      };
+
+      // Build all content children
+      const children = [
+        // Title block
+        new Paragraph({
+          spacing: { before: 0, after: 160 },
+          shading: { fill: DARK_COLOR, type: ShadingType.CLEAR },
+          children: [
+            new TextRun({ text: meeting.name || 'Meeting Report', bold: true, size: 44, color: 'FFFFFF', font: 'Arial' }),
+          ]
+        }),
+        new Paragraph({
+          spacing: { before: 0, after: 320 },
+          children: [
+            new TextRun({ text: `${s.meetingDate}  •  ${meeting.domain || ''}  •  ${s.duration}`, size: 20, color: GREY_COLOR, font: 'Arial', italics: true }),
+          ]
+        }),
+
+        // Meeting Details
+        sectionHeading('📋  Meeting Details'),
+        new Paragraph({ spacing: { before: 100, after: 100 } }),
+        infoTable([
+          ['Title', meeting.name || ''],
+          ['Date', s.meetingDate],
+          ['Duration', s.duration],
+          ['Type / Domain', meeting.domain || ''],
+          ['Status', (meeting.status || '').toUpperCase()],
+          ['Attendees', s.attendeeNames],
+        ]),
+        new Paragraph({ spacing: { before: 200, after: 0 } }),
+
+        // Summary
+        sectionHeading('📝  Summary'),
+        bodyPara(meeting.summary || 'No summary available.', { italic: !meeting.summary, muted: !meeting.summary }),
+      ];
+
+      // Conclusions
+      if (meeting.conclusions?.length > 0) {
+        children.push(sectionHeading('💡  Key Conclusions'));
+        meeting.conclusions.forEach((c, i) => children.push(numberedItem(c, i + 1)));
+      }
+
+      // Decisions
+      if (meeting.decisions?.length > 0) {
+        children.push(sectionHeading('⚖️  Decisions'));
+        meeting.decisions.forEach((d, i) => children.push(numberedItem(d, i + 1)));
+      }
+
+      // Action Items
+      children.push(sectionHeading('✅  Action Items'));
+      children.push(new Paragraph({ spacing: { before: 100, after: 100 } }));
+      children.push(actionTable(meeting.actionItems));
+      children.push(new Paragraph({ spacing: { before: 200, after: 0 } }));
+
+      // Follow-up Topics
+      if (meeting.followUpTopics?.length > 0) {
+        children.push(sectionHeading('🔁  Follow-up Topics'));
+        meeting.followUpTopics.forEach((f, i) => children.push(numberedItem(f, i + 1)));
+      }
+
+      // Attendee Contributions
+      if (meeting.attendeeContributions?.length > 0) {
+        children.push(sectionHeading('👥  Attendee Contributions'));
+        children.push(new Paragraph({ spacing: { before: 100, after: 100 } }));
+        children.push(new Table({
+          width: { size: 9360, type: WidthType.DXA },
+          columnWidths: [2800, 1200, 5360],
+          rows: [
+            new TableRow({
+              tableHeader: true,
+              children: ['Attendee', 'Score', 'Key Points'].map(h =>
+                new TableCell({
+                  borders,
+                  shading: { fill: '3D3A6E', type: ShadingType.CLEAR },
+                  margins: { top: 80, bottom: 80, left: 120, right: 120 },
+                  children: [new Paragraph({ children: [new TextRun({ text: h, bold: true, color: 'FFFFFF', size: 18, font: 'Arial' })] })]
+                })
+              )
+            }),
+            ...meeting.attendeeContributions.map((c, i) => {
+              const score = c.contributionScore ?? c.score ?? 0;
+              const kp = Array.isArray(c.keyPoints) ? c.keyPoints.join('; ') : (c.keyPoints || '—');
+              const scoreColor = score >= 8 ? '2E7D32' : score >= 5 ? 'E65100' : 'B71C1C';
+              const bg = i % 2 === 0 ? 'FFFFFF' : 'F5F4FF';
+              return new TableRow({
+                children: [
+                  new TableCell({ borders, width: { size: 2800, type: WidthType.DXA }, shading: { fill: bg, type: ShadingType.CLEAR }, margins: { top: 80, bottom: 80, left: 120, right: 120 }, children: [new Paragraph({ children: [new TextRun({ text: c.name || '—', size: 19, bold: true, font: 'Arial', color: DARK_COLOR })] })] }),
+                  new TableCell({ borders, width: { size: 1200, type: WidthType.DXA }, shading: { fill: bg, type: ShadingType.CLEAR }, margins: { top: 80, bottom: 80, left: 120, right: 120 }, verticalAlign: VerticalAlign.CENTER, children: [new Paragraph({ alignment: AlignmentType.CENTER, children: [new TextRun({ text: `${score}/10`, size: 22, bold: true, font: 'Arial', color: scoreColor })] })] }),
+                  new TableCell({ borders, width: { size: 5360, type: WidthType.DXA }, shading: { fill: bg, type: ShadingType.CLEAR }, margins: { top: 80, bottom: 80, left: 120, right: 120 }, children: [new Paragraph({ children: [new TextRun({ text: kp, size: 18, font: 'Arial', color: GREY_COLOR })] })] }),
+                ]
+              });
+            })
+          ]
+        }));
+        children.push(new Paragraph({ spacing: { before: 200, after: 0 } }));
+      }
+
+      // Transcript
+      children.push(sectionHeading('🎙️  Transcript'));
+      if (transcriptSegments.length > 0) {
+        transcriptSegments.forEach(seg => {
+          const mins = Math.floor((seg.startTime || 0) / 60);
+          const secs = ((seg.startTime || 0) % 60).toString().padStart(2, '0');
+          children.push(new Paragraph({
+            spacing: { before: 80, after: 40 },
+            children: [
+              new TextRun({ text: `${seg.speaker}  `, bold: true, color: ACCENT_COLOR, size: 19, font: 'Arial' }),
+              new TextRun({ text: `[${mins}:${secs}]`, color: GREY_COLOR, size: 17, font: 'Arial' }),
+            ]
+          }));
+          children.push(new Paragraph({
+            spacing: { before: 0, after: 100 },
+            indent: { left: 240 },
+            children: [new TextRun({ text: seg.text || '', size: 19, font: 'Arial', color: DARK_COLOR })]
+          }));
+        });
+      } else if (meeting.transcriptRaw) {
+        children.push(bodyPara(meeting.transcriptRaw));
+      } else {
+        children.push(bodyPara('No transcript available.', { muted: true, italic: true }));
+      }
+
+      const doc = new Document({
+        styles: {
+          default: { document: { run: { font: 'Arial', size: 20 } } },
+        },
+        sections: [{
+          properties: {
+            page: {
+              size: { width: 12240, height: 15840 },
+              margin: { top: 1080, right: 1080, bottom: 1080, left: 1080 },
+            }
+          },
+          headers: {
+            default: new Header({
+              children: [
+                new Paragraph({
+                  border: { bottom: { style: BorderStyle.SINGLE, size: 6, color: ACCENT_COLOR, space: 4 } },
+                  spacing: { after: 0 },
+                  children: [
+                    new TextRun({ text: 'OrgOS  •  Meeting Report', bold: true, color: ACCENT_COLOR, size: 18, font: 'Arial' }),
+                    new TextRun({ text: `  |  ${meeting.name || ''}`, color: GREY_COLOR, size: 18, font: 'Arial' }),
+                  ]
+                })
+              ]
+            })
+          },
+          footers: {
+            default: new Footer({
+              children: [
+                new Paragraph({
+                  border: { top: { style: BorderStyle.SINGLE, size: 4, color: 'D0D0E8', space: 4 } },
+                  spacing: { before: 0 },
+                  children: [
+                    new TextRun({ text: 'Generated by OrgOS  •  AI-Powered Organization Operating System', color: GREY_COLOR, size: 16, font: 'Arial' }),
+                  ]
+                })
+              ]
+            })
+          },
+          children,
+        }]
+      });
+
+      // Use toBlob() not toBuffer() — toBuffer() is Node.js only, not supported in browsers
+      const blob = await Packer.toBlob(doc);
       const url = URL.createObjectURL(blob);
       const link = document.createElement('a');
       const safeName = (meeting.name || 'meeting').replace(/[^a-z0-9]/gi, '_').toLowerCase();
       link.href = url;
-      link.download = `${safeName}_summary.xlsx`;
+      link.download = `${safeName}_report.docx`;
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);
       URL.revokeObjectURL(url);
 
       toast.dismiss(loadingToast);
-      toast.success('Excel report exported!');
+      toast.success('DOCX exported!');
     } catch (err) {
-      console.error('Export failed:', err);
+      console.error('DOCX export failed:', err);
       toast.dismiss(loadingToast);
-      toast.error('Export failed. Please try again.');
+      toast.error('DOCX export failed. Please try again.');
     }
   };
   // ───────────────────────────────────────────────────────────────────────────
@@ -566,10 +841,19 @@ export default function MeetingDetailPage({ params }) {
           </div>
 
           <div className="flex gap-2 flex-wrap">
+            {/* ── PDF Export ── */}
             {isReady && (
-              <Button variant="outline" onClick={handleExport} className="border-slate-700">
+              <Button variant="outline" onClick={handleExportPDF} className="border-slate-700">
                 <Download className="mr-2 h-4 w-4" />
-                Export Excel
+                Export PDF
+              </Button>
+            )}
+
+            {/* ── DOCX Export ── */}
+            {isReady && (
+              <Button variant="outline" onClick={handleExportDOCX} className="border-slate-700">
+                <FileDown className="mr-2 h-4 w-4" />
+                Export DOCX
               </Button>
             )}
 
