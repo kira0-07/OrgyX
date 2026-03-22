@@ -30,14 +30,15 @@ async def load_pipeline():
         from pyannote.audio import Pipeline
         import torch
 
-        # Set token via huggingface_hub login — works across all versions
         from huggingface_hub import login
         login(token=hf_token)
 
         logger.info("Loading pyannote speaker diarization pipeline...")
 
-        # No token argument — auth handled by login() above
-        pipeline = Pipeline.from_pretrained("pyannote/speaker-diarization-3.1", use_auth_token=hf_token)
+        pipeline = Pipeline.from_pretrained(
+            "pyannote/speaker-diarization-3.1",
+            use_auth_token=hf_token
+        )
 
         # Explicitly use CPU
         pipeline = pipeline.to(torch.device("cpu"))
@@ -50,12 +51,14 @@ async def load_pipeline():
         logger.error(traceback.format_exc())
         pipeline = None
 
+
 @app.get("/health")
 def health():
     return {
         "status": "ok",
         "pipeline_loaded": pipeline is not None
     }
+
 
 @app.post("/diarize")
 async def diarize(
@@ -80,8 +83,18 @@ async def diarize(
         logger.info(f"Diarizing {file.filename} ({len(content)/1024:.1f}KB), num_speakers={num_speakers}")
 
         diarize_kwargs = {}
+
         if num_speakers and num_speakers > 1:
             diarize_kwargs["num_speakers"] = num_speakers
+
+        # FIX: Set min_duration thresholds so short speech bursts from
+        # judges speaking briefly in a demo meeting are not missed.
+        # min_duration_on=0.1 means any speech segment >= 100ms is kept.
+        # min_duration_off=0.1 means silence gaps >= 100ms split speakers.
+        # Previously pyannote used its defaults (~500ms) which caused
+        # brief utterances in short meetings to be silently dropped.
+        diarize_kwargs["min_duration_on"] = 0.1
+        diarize_kwargs["min_duration_off"] = 0.1
 
         diarization = pipeline(tmp_path, **diarize_kwargs)
 
@@ -110,6 +123,7 @@ async def diarize(
     finally:
         if tmp_path and os.path.exists(tmp_path):
             os.unlink(tmp_path)
+
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=7860)

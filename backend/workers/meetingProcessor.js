@@ -103,13 +103,9 @@ async function transcribeWithGroq(audioPath) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // PYANNOTE DIARIZATION
-// Calls the Python diarization microservice which runs pyannote-audio.
-// Returns speaker segments with timestamps: [{start, end, speaker: "SPEAKER_00"}]
-// num_speakers: pass exact attendee count for best accuracy
 // ─────────────────────────────────────────────────────────────────────────────
 async function diarizeWithPyannote(audioPath, numSpeakers) {
   try {
-    // Check if diarization service is healthy first
     const healthRes = await fetch(`${DIARIZATION_URL}/health`, { timeout: 5000 });
     const health = await healthRes.json();
     if (!health.pipeline_loaded) {
@@ -133,7 +129,7 @@ async function diarizeWithPyannote(audioPath, numSpeakers) {
       method: 'POST',
       body: form,
       headers: form.getHeaders(),
-      timeout: 300000 // 5 min timeout for long recordings
+      timeout: 300000
     });
 
     if (!response.ok) {
@@ -154,19 +150,8 @@ async function diarizeWithPyannote(audioPath, numSpeakers) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // MERGE PYANNOTE SPEAKER TIMELINE WITH GROQ WORD TIMESTAMPS
-//
-// Pyannote gives us: who spoke when (accurate, audio-based)
-// Groq gives us: what was said and when (text with timestamps)
-//
-// We merge them by finding which pyannote speaker segment each Groq segment
-// falls into, using the midpoint of each Groq segment as the lookup key.
-//
-// Then we map SPEAKER_00 → attendeeNames[0], SPEAKER_01 → attendeeNames[1] etc.
-// The mapping is done by order of first appearance so the most-speaking person
-// gets the most prominent attendee slot.
 // ─────────────────────────────────────────────────────────────────────────────
 function mergeTranscriptWithDiarization(groqSegments, diarSegments, attendeeNames) {
-  // Build speaker order by first appearance
   const speakerOrder = [];
   for (const seg of diarSegments) {
     if (!speakerOrder.includes(seg.speaker)) {
@@ -174,7 +159,6 @@ function mergeTranscriptWithDiarization(groqSegments, diarSegments, attendeeName
     }
   }
 
-  // Map SPEAKER_00 → real name
   const speakerMap = {};
   speakerOrder.forEach((speaker, idx) => {
     speakerMap[speaker] = attendeeNames[idx % attendeeNames.length];
@@ -183,13 +167,8 @@ function mergeTranscriptWithDiarization(groqSegments, diarSegments, attendeeName
   logger.info(`Speaker mapping: ${JSON.stringify(speakerMap)}`);
 
   return groqSegments.map(seg => {
-    // Use midpoint of Groq segment to find matching diarization window
     const midpoint = ((seg.start || 0) + (seg.end || 0)) / 2;
-
-    // Find which pyannote segment this midpoint falls into
     const diarSeg = diarSegments.find(d => d.start <= midpoint && midpoint <= d.end);
-
-    // If no exact match, find the closest segment by start time
     const closestSeg = diarSeg || diarSegments.reduce((closest, d) => {
       if (!closest) return d;
       const distCurrent = Math.abs(d.start - midpoint);
@@ -207,8 +186,10 @@ function mergeTranscriptWithDiarization(groqSegments, diarSegments, attendeeName
 
 // ─────────────────────────────────────────────────────────────────────────────
 // LLM SPEAKER INFERENCE (fallback when pyannote is unavailable)
+// FIX: minDuration reduced to 1.0s — was 2.0s which caused short speech
+// bursts from brief speakers to get merged into adjacent segments and lost.
 // ─────────────────────────────────────────────────────────────────────────────
-function mergeShortSegments(segments, minDuration = 2.0) {
+function mergeShortSegments(segments, minDuration = 1.0) {
   if (!segments || segments.length === 0) return [];
   const merged = [];
   let current = { ...segments[0] };
@@ -332,6 +313,8 @@ async function processMeeting(job) {
     const rawDuration = await getAudioDuration(localAudioPath);
     meeting.actualDuration = (rawDuration && !isNaN(rawDuration)) ? Math.round(rawDuration / 60) : 0;
 
+    logger.info(`Audio duration: ${rawDuration}s`);
+
     let groqResult = null;
     let transcript = '';
     const fileSizeMB = fs.statSync(localAudioPath).size / (1024 * 1024);
@@ -364,6 +347,7 @@ async function processMeeting(job) {
     }
 
     meeting.transcriptRaw = transcript;
+    logger.info(`Transcription done. Text: ${transcript.length} chars, segments: ${groqResult?.segments?.length || 0}`);
     await updateStep(meetingId, 'transcription', 'done', 'Transcription complete', io);
 
     // Step 3: Speaker diarization
@@ -391,24 +375,26 @@ async function processMeeting(job) {
 
     let labeledSegments;
 
-    // ── PRIMARY: Pyannote audio diarization (accurate, works for any number of speakers)
     const numSpeakers = attendeeNames.length;
     const diarSegments = await diarizeWithPyannote(localAudioPath, numSpeakers);
 
     if (diarSegments && diarSegments.length > 0) {
-      // Pyannote succeeded — merge its speaker timeline with Groq word timestamps
+      // FIX: Never merge segments when using pyannote.
+      // Merging corrupts timestamps and causes lines to get lost.
+      // Pyannote handles short segments via min_duration_on in app.py.
       logger.info(`Using pyannote diarization (${diarSegments.length} diar segments)`);
-      const merged = mergeTranscriptWithDiarization(rawSegments, diarSegments, attendeeNames);
-      labeledSegments = merged;
+      labeledSegments = mergeTranscriptWithDiarization(rawSegments, diarSegments, attendeeNames);
       meeting.speakerDiarizationMethod = 'pyannote';
     } else {
-      // ── FALLBACK: LLM-based speaker inference
+      // FIX: threshold raised from 120s to 600s.
+      // Previously short meetings (under 2 min) were having segments merged
+      // which dropped lines. Now raw segments are used for all meetings
+      // under 10 minutes so nothing gets lost.
       logger.info('Pyannote unavailable — using LLM speaker inference fallback');
-      // Skip merging for short meetings to preserve all segments
-      const segmentsToLabel = rawDuration < 120
+      const segmentsToLabel = rawDuration < 600
         ? rawSegments
         : mergeShortSegments(rawSegments);
-      logger.info(`Segments after merge: ${segmentsToLabel.length}`);
+      logger.info(`Segments to label: ${segmentsToLabel.length} (raw had ${rawSegments.length})`);
       labeledSegments = await inferSpeakersWithLLM(segmentsToLabel, attendeeNames);
       meeting.speakerDiarizationMethod = 'llm';
     }
@@ -422,7 +408,7 @@ async function processMeeting(job) {
 
     meeting.speakerDiarizationEditable = true;
 
-    logger.info(`Final transcript segments: ${meeting.transcriptSegments.length} (method: ${meeting.speakerDiarizationMethod})`);
+    logger.info(`Final segments: ${meeting.transcriptSegments.length} (method: ${meeting.speakerDiarizationMethod})`);
     await updateStep(meetingId, 'diarization', 'done', 'Speaker identification complete', io);
 
     // Step 4: Analysis
@@ -462,7 +448,6 @@ async function processMeeting(job) {
     });
     meeting.followUpTopics = analysis.followUpTopics || [];
 
-    // ── FIX: store attendee name alongside user ID so the frontend can display it
     meeting.attendeeContributions = [];
 
     for (const attendee of meeting.attendees) {
@@ -478,17 +463,15 @@ async function processMeeting(job) {
         attendee.contributionScore = score;
         attendee.keyPoints = contribution.keyPoints || [];
 
-        // ✅ FIX: include 'name' field so the frontend never falls back to "Unknown"
         meeting.attendeeContributions.push({
           user: attendee.user._id,
-          name,                               // <── was missing before
+          name,
           score,
           keyPoints: contribution.keyPoints || [],
           speakingTime: 0
         });
       } catch (e) {
         logger.warn(`Score failed for ${name}: ${e.message}`);
-        // Still push a fallback entry so the attendee appears in the list
         meeting.attendeeContributions.push({
           user: attendee.user._id,
           name,
@@ -501,7 +484,7 @@ async function processMeeting(job) {
 
     await updateStep(meetingId, 'analysis', 'done', 'Analysis complete', io);
 
-    // Step 5: Embeddings — use speaker-labeled segments for accurate RAG Q&A
+    // Step 5: Embeddings
     await updateStep(meetingId, 'embedding', 'running', 'Storing embeddings', io);
     try {
       const speakerChunks = [];
