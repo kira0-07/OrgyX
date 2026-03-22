@@ -6,7 +6,7 @@ import SimplePeer from 'simple-peer';
 import {
   Mic, MicOff, Video, VideoOff, Phone,
   MessageSquare, ScreenShare, StopCircle,
-  Hand, Users, PhoneOff, Circle,
+  Hand, Users, Circle,
   Pin, PinOff, Maximize2, Minimize2, X
 } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
@@ -21,8 +21,11 @@ export default function MeetingRoom({ meetingId, user }) {
   const localVideoRef = useRef(null);
   const localStreamRef = useRef(null);
   const peersRef = useRef({});
-  const mediaRecorderRef = useRef(null);
+  const mediaRecorderRef = useRef(null);       // host full recording
+  const myRecorderRef = useRef(null);          // per-device chunk recorder
   const recordingChunksRef = useRef([]);
+  const myChunksRef = useRef([]);              // my own audio chunks
+  const chunkIntervalRef = useRef(null);       // interval to send chunks
   const chatBottomRef = useRef(null);
   const fullscreenContainerRef = useRef(null);
 
@@ -45,6 +48,7 @@ export default function MeetingRoom({ meetingId, user }) {
   const [fullscreenUserId, setFullscreenUserId] = useState(null);
   const [meetingCancelled, setMeetingCancelled] = useState(false);
   const [isNativeFullscreen, setIsNativeFullscreen] = useState(false);
+  const [isMyRecording, setIsMyRecording] = useState(false);
 
   const myId = (user?._id || user?.id)?.toString();
   const myName = user?.firstName ? `${user.firstName} ${user.lastName}` : 'You';
@@ -72,52 +76,108 @@ export default function MeetingRoom({ meetingId, user }) {
   const getParticipantName = useCallback((userId) => {
     if (!userId) return 'Participant';
     const id = userId.toString();
-    if (id === myId) return 'You';
+    if (id === myId) return myName;
     return participantNames[id]?.fullName || 'Participant';
-  }, [participantNames, myId]);
+  }, [participantNames, myId, myName]);
 
   const setLocalVideoRef = useCallback((el) => {
     localVideoRef.current = el;
-    if (el && localStreamRef.current) {
-      el.srcObject = localStreamRef.current;
-    }
+    if (el && localStreamRef.current) el.srcObject = localStreamRef.current;
   }, []);
 
-  // Track native fullscreen changes
   useEffect(() => {
-    const onChange = () => {
-      setIsNativeFullscreen(!!document.fullscreenElement);
-    };
+    const onChange = () => setIsNativeFullscreen(!!document.fullscreenElement);
     document.addEventListener('fullscreenchange', onChange);
     return () => document.removeEventListener('fullscreenchange', onChange);
   }, []);
 
-  // FIX: Fullscreen — use the browser Fullscreen API on the container element
   const handleFullscreen = useCallback((userId) => {
     if (fullscreenUserId === userId && isNativeFullscreen) {
-      // Exit fullscreen
       document.exitFullscreen().catch(() => {});
       setFullscreenUserId(null);
     } else {
       setFullscreenUserId(userId);
-      // Request native fullscreen on the overlay container after it renders
       setTimeout(() => {
         if (fullscreenContainerRef.current) {
-          fullscreenContainerRef.current.requestFullscreen().catch((err) => {
-            // Fallback: overlay-only fullscreen still works visually
-            console.warn('Native fullscreen failed:', err.message);
-          });
+          fullscreenContainerRef.current.requestFullscreen().catch(err =>
+            console.warn('Native fullscreen failed:', err.message)
+          );
         }
       }, 50);
     }
   }, [fullscreenUserId, isNativeFullscreen]);
 
   const exitFullscreen = useCallback(() => {
-    if (document.fullscreenElement) {
-      document.exitFullscreen().catch(() => {});
-    }
+    if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
     setFullscreenUserId(null);
   }, []);
+
+  // ── Per-device audio chunk recording ──────────────────────────────────────
+  // Each participant silently records their own mic in 30s chunks
+  // and sends them to the server tagged with their userId/name
+  const startMyRecording = useCallback((stream) => {
+    if (!stream || myRecorderRef.current) return;
+    try {
+      const audioOnly = new MediaStream(stream.getAudioTracks());
+      const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
+        ? 'audio/webm;codecs=opus' : 'audio/webm';
+      const recorder = new MediaRecorder(audioOnly, { mimeType });
+      myChunksRef.current = [];
+
+      recorder.ondataavailable = e => {
+        if (e.data.size > 0) myChunksRef.current.push(e.data);
+      };
+
+      // Every 30 seconds, send the accumulated chunk to the server
+      chunkIntervalRef.current = setInterval(() => {
+        if (myChunksRef.current.length === 0) return;
+        const blob = new Blob([...myChunksRef.current], { type: mimeType });
+        myChunksRef.current = [];
+        blob.arrayBuffer().then(buffer => {
+          if (socketRef.current) {
+            socketRef.current.emit('audio-chunk', {
+              meetingId,
+              audioChunk: buffer,
+              timestamp: Date.now()
+            });
+          }
+        }).catch(e => console.warn('Chunk send failed:', e));
+      }, 30000);
+
+      recorder.start(1000);
+      myRecorderRef.current = recorder;
+      setIsMyRecording(true);
+    } catch (e) {
+      console.warn('Per-device recording failed:', e.message);
+    }
+  }, [meetingId]);
+
+  const stopMyRecording = useCallback(() => {
+    if (chunkIntervalRef.current) {
+      clearInterval(chunkIntervalRef.current);
+      chunkIntervalRef.current = null;
+    }
+    // Send any remaining chunks before stopping
+    if (myChunksRef.current.length > 0 && myRecorderRef.current) {
+      const mimeType = myRecorderRef.current.mimeType || 'audio/webm';
+      const blob = new Blob([...myChunksRef.current], { type: mimeType });
+      myChunksRef.current = [];
+      blob.arrayBuffer().then(buffer => {
+        if (socketRef.current) {
+          socketRef.current.emit('audio-chunk', {
+            meetingId,
+            audioChunk: buffer,
+            timestamp: Date.now()
+          });
+        }
+      }).catch(() => {});
+    }
+    if (myRecorderRef.current && myRecorderRef.current.state !== 'inactive') {
+      myRecorderRef.current.stop();
+    }
+    myRecorderRef.current = null;
+    setIsMyRecording(false);
+  }, [meetingId]);
 
   useEffect(() => {
     let mounted = true;
@@ -134,10 +194,7 @@ export default function MeetingRoom({ meetingId, user }) {
         if (!mounted) { stream.getTracks().forEach(t => t.stop()); return; }
 
         localStreamRef.current = stream;
-
-        if (localVideoRef.current) {
-          localVideoRef.current.srcObject = stream;
-        }
+        if (localVideoRef.current) localVideoRef.current.srcObject = stream;
 
         socketRef.current = getSocket();
 
@@ -150,6 +207,28 @@ export default function MeetingRoom({ meetingId, user }) {
           console.warn('Join API:', e.message);
         }
 
+        // Receive full participant name map from server
+        socketRef.current.on('participant-names', (nameMap) => {
+          if (!mounted) return;
+          setParticipantNames(prev => {
+            const merged = { ...prev };
+            Object.entries(nameMap).forEach(([uid, name]) => {
+              if (!merged[uid]) merged[uid] = { fullName: name };
+              else merged[uid].fullName = name;
+            });
+            return merged;
+          });
+        });
+
+        // Update name map when someone new joins
+        socketRef.current.on('participant-joined', ({ userId, displayName }) => {
+          if (!mounted) return;
+          setParticipantNames(prev => ({
+            ...prev,
+            [userId]: { ...prev[userId], fullName: displayName }
+          }));
+        });
+
         socketRef.current.on('existing-users', (users) => {
           if (!mounted) return;
           users.forEach(({ userId }) => {
@@ -158,18 +237,21 @@ export default function MeetingRoom({ meetingId, user }) {
           });
         });
 
+        // user-connected: only create peer if we don't already have one
         socketRef.current.on('user-connected', (userId) => {
           if (!mounted) return;
           if (!userId || userId?.toString() === myId) return;
           toast.success(`${getParticipantName(userId)} joined`);
           fetchParticipantNames();
-          createPeer(userId, false, stream);
+          if (!peersRef.current[userId]) {
+            createPeer(userId, false, stream);
+          }
         });
 
         socketRef.current.on('user-disconnected', (userId) => {
           if (!mounted) return;
           destroyPeer(userId);
-          toast.info(`${getParticipantName(userId)} left`);
+          toast(`${getParticipantName(userId)} left`, { icon: '👋' });
         });
 
         socketRef.current.on('offer', ({ offer, userId }) => {
@@ -189,9 +271,11 @@ export default function MeetingRoom({ meetingId, user }) {
           if (peersRef.current[userId]) peersRef.current[userId].signal(candidate);
         });
 
+        // Chat: userName now comes from server JWT — no fallback needed
         socketRef.current.on('chat-message', ({ userId, message, timestamp, userName }) => {
           if (!mounted) return;
           if (userId?.toString() === myId) return;
+          // Use server-provided userName (from JWT) — always real name now
           const senderName = userName || getParticipantName(userId);
           setMessages(prev => [...prev, {
             id: Date.now() + Math.random(),
@@ -226,11 +310,22 @@ export default function MeetingRoom({ meetingId, user }) {
           setRaisedHands(prev => { const n = new Set(prev); n.delete(userId?.toString()); return n; });
         });
 
-        socketRef.current.on('recording-started', () => setIsRecording(true));
-        socketRef.current.on('recording-stopped', () => setIsRecording(false));
+        socketRef.current.on('recording-started', () => {
+          setIsRecording(true);
+          // Start per-device recording for all participants when host starts recording
+          if (mounted && localStreamRef.current) {
+            startMyRecording(localStreamRef.current);
+          }
+        });
+
+        socketRef.current.on('recording-stopped', () => {
+          setIsRecording(false);
+          stopMyRecording();
+        });
 
         socketRef.current.on('meeting-ended', () => {
           toast.success('Meeting ended by host');
+          stopMyRecording();
           cleanup();
           router.push(`/meetings/${meetingId}`);
         });
@@ -238,6 +333,7 @@ export default function MeetingRoom({ meetingId, user }) {
         socketRef.current.on('meeting-cancelled', ({ message }) => {
           setMeetingCancelled(true);
           toast.error(message || 'Meeting has been cancelled by the host');
+          stopMyRecording();
           cleanup();
           setTimeout(() => router.push('/meetings/history'), 2000);
         });
@@ -249,7 +345,7 @@ export default function MeetingRoom({ meetingId, user }) {
         console.error('Init error:', error);
         if (mounted) {
           if (error.name === 'NotAllowedError') {
-            toast.error('Camera/microphone access denied. Please allow permissions and try again.');
+            toast.error('Camera/microphone access denied.');
           } else {
             toast.error('Failed to initialize meeting room.');
           }
@@ -259,7 +355,11 @@ export default function MeetingRoom({ meetingId, user }) {
     };
 
     init();
-    return () => { mounted = false; cleanup(); };
+    return () => {
+      mounted = false;
+      stopMyRecording();
+      cleanup();
+    };
   }, [meetingId, myId]);
 
   useEffect(() => {
@@ -273,6 +373,7 @@ export default function MeetingRoom({ meetingId, user }) {
   const createPeer = (userId, initiator, stream, incomingOffer = null) => {
     if (peersRef.current[userId]) {
       try { peersRef.current[userId].destroy(); } catch (e) {}
+      delete peersRef.current[userId];
     }
 
     const peer = new SimplePeer({
@@ -304,7 +405,10 @@ export default function MeetingRoom({ meetingId, user }) {
     });
 
     peer.on('close', () => destroyPeer(userId));
-    peer.on('error', (err) => console.warn('Peer error:', err.message));
+    peer.on('error', (err) => {
+      console.warn(`Peer error with ${userId}:`, err.message);
+      setRemoteStreams(prev => { const n = { ...prev }; delete n[userId]; return n; });
+    });
 
     if (incomingOffer) peer.signal(incomingOffer);
     peersRef.current[userId] = peer;
@@ -348,19 +452,14 @@ export default function MeetingRoom({ meetingId, user }) {
           video: { cursor: 'always' }, audio: false
         });
         const screenTrack = screenStream.getVideoTracks()[0];
-
         Object.values(peersRef.current).forEach(peer => {
           try {
             const sender = peer._pc?.getSenders().find(s => s.track?.kind === 'video');
             if (sender) sender.replaceTrack(screenTrack);
           } catch (e) {}
         });
-
-        if (localVideoRef.current) {
-          localVideoRef.current.srcObject = screenStream;
-        }
-
-        screenTrack.onended = () => { stopScreenShare(); };
+        if (localVideoRef.current) localVideoRef.current.srcObject = screenStream;
+        screenTrack.onended = () => stopScreenShare();
         setIsScreenSharing(true);
       } else {
         stopScreenShare();
@@ -399,14 +498,13 @@ export default function MeetingRoom({ meetingId, user }) {
     setIsHandRaised(p => !p);
   };
 
+  // Host full recording (for upload to S3)
   const startRecording = () => {
     if (!localStreamRef.current) return;
     try {
       const audioStream = new MediaStream(localStreamRef.current.getAudioTracks());
       const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
-        ? 'audio/webm;codecs=opus'
-        : 'audio/webm';
-
+        ? 'audio/webm;codecs=opus' : 'audio/webm';
       const recorder = new MediaRecorder(audioStream, { mimeType });
       recordingChunksRef.current = [];
 
@@ -426,7 +524,6 @@ export default function MeetingRoom({ meetingId, user }) {
           toast.success('Recording uploaded! AI summary will be ready shortly.', { id: 'upload' });
         } catch (e) {
           toast.error('Failed to upload recording', { id: 'upload' });
-          console.error('Upload error:', e.response?.data);
         }
       };
 
@@ -457,7 +554,7 @@ export default function MeetingRoom({ meetingId, user }) {
     setMessages(prev => [...prev, {
       id: Date.now(),
       userId: myId,
-      userName: 'You',
+      userName: myName,
       message,
       timestamp: new Date().toISOString(),
       isOwn: true
@@ -467,6 +564,7 @@ export default function MeetingRoom({ meetingId, user }) {
   };
 
   const leaveMeeting = () => {
+    stopMyRecording();
     cleanup();
     router.push('/meetings/history');
   };
@@ -475,6 +573,7 @@ export default function MeetingRoom({ meetingId, user }) {
     if (!isHost) return;
     setIsEndingMeeting(true);
     try {
+      stopMyRecording();
       await api.post(`/meetings/${meetingId}/end`);
       toast.success('Meeting ended');
       cleanup();
@@ -515,7 +614,6 @@ export default function MeetingRoom({ meetingId, user }) {
   const remoteEntries = Object.entries(remoteStreams);
   const totalParticipants = remoteEntries.length + 1;
 
-  // Controls bar — shared between main view and fullscreen overlay
   const ControlsBar = () => (
     <div className="bg-slate-900/95 backdrop-blur border-t border-slate-800 px-4 py-3 shrink-0">
       <div className="flex items-center justify-center gap-2 flex-wrap">
@@ -566,54 +664,33 @@ export default function MeetingRoom({ meetingId, user }) {
   );
 
   return (
-    // FIX: use h-screen + overflow-hidden so the page never scrolls
-    // The layout is header (fixed height) + video area (flex-1, fills remaining) + controls (fixed height)
-    // Nothing can push controls off screen
     <div className="h-screen bg-slate-950 flex flex-col overflow-hidden">
 
-      {/* ── Fullscreen overlay ── */}
       {fullscreenUserId && (
-        <div
-          ref={fullscreenContainerRef}
-          className="fixed inset-0 z-50 bg-black flex flex-col"
-        >
-          {/* Fullscreen video */}
+        <div ref={fullscreenContainerRef} className="fixed inset-0 z-50 bg-black flex flex-col">
           <div className="flex-1 min-h-0">
             {fullscreenUserId === 'local' ? (
               <LocalTile
-                videoRef={setLocalVideoRef}
-                name={myName}
-                isHost={isHost}
-                isAudioEnabled={isAudioEnabled}
-                isVideoEnabled={isVideoEnabled}
-                isScreenSharing={isScreenSharing}
-                isHandRaised={raisedHands.has(myId)}
-                isPinned={false}
-                onPin={() => {}}
-                onFullscreen={exitFullscreen}
-                isFullscreen
-                large
+                videoRef={setLocalVideoRef} name={myName} isHost={isHost}
+                isAudioEnabled={isAudioEnabled} isVideoEnabled={isVideoEnabled}
+                isScreenSharing={isScreenSharing} isHandRaised={raisedHands.has(myId)}
+                isPinned={false} onPin={() => {}} onFullscreen={exitFullscreen}
+                isFullscreen large
               />
             ) : (
               <RemoteTile
-                userId={fullscreenUserId}
-                stream={remoteStreams[fullscreenUserId]}
+                userId={fullscreenUserId} stream={remoteStreams[fullscreenUserId]}
                 name={getParticipantName(fullscreenUserId)}
                 isHandRaised={raisedHands.has(fullscreenUserId)}
-                isPinned={false}
-                onPin={() => {}}
-                onFullscreen={exitFullscreen}
-                isFullscreen
-                large
+                isPinned={false} onPin={() => {}} onFullscreen={exitFullscreen}
+                isFullscreen large
               />
             )}
           </div>
-          {/* Controls inside fullscreen */}
           <ControlsBar />
         </div>
       )}
 
-      {/* Header */}
       <header className="bg-slate-900 border-b border-slate-800 px-4 py-3 flex items-center justify-between shrink-0">
         <div className="flex items-center gap-3">
           <h1 className="font-semibold text-slate-100">Meeting Room</h1>
@@ -655,7 +732,6 @@ export default function MeetingRoom({ meetingId, user }) {
         </div>
       )}
 
-      {/* Main — flex-1 + min-h-0 so it fills space between header and controls without overflow */}
       <div className="flex-1 min-h-0 flex overflow-hidden">
         <div className={cn('flex-1 min-w-0 p-3 overflow-hidden transition-all duration-200', chatOpen && 'mr-80')}>
           {pinnedUserId ? (
@@ -663,55 +739,37 @@ export default function MeetingRoom({ meetingId, user }) {
               <div className="flex-1 min-h-0">
                 {pinnedUserId === 'local' ? (
                   <LocalTile
-                    videoRef={setLocalVideoRef}
-                    name={myName}
-                    isHost={isHost}
-                    isAudioEnabled={isAudioEnabled}
-                    isVideoEnabled={isVideoEnabled}
-                    isScreenSharing={isScreenSharing}
-                    isHandRaised={raisedHands.has(myId)}
-                    isPinned
-                    onPin={() => setPinnedUserId(null)}
-                    onFullscreen={() => handleFullscreen('local')}
-                    large
+                    videoRef={setLocalVideoRef} name={myName} isHost={isHost}
+                    isAudioEnabled={isAudioEnabled} isVideoEnabled={isVideoEnabled}
+                    isScreenSharing={isScreenSharing} isHandRaised={raisedHands.has(myId)}
+                    isPinned onPin={() => setPinnedUserId(null)}
+                    onFullscreen={() => handleFullscreen('local')} large
                   />
                 ) : (
                   <RemoteTile
-                    userId={pinnedUserId}
-                    stream={remoteStreams[pinnedUserId]}
+                    userId={pinnedUserId} stream={remoteStreams[pinnedUserId]}
                     name={getParticipantName(pinnedUserId)}
                     isHandRaised={raisedHands.has(pinnedUserId)}
-                    isPinned
-                    onPin={() => setPinnedUserId(null)}
-                    onFullscreen={() => handleFullscreen(pinnedUserId)}
-                    large
+                    isPinned onPin={() => setPinnedUserId(null)}
+                    onFullscreen={() => handleFullscreen(pinnedUserId)} large
                   />
                 )}
               </div>
               <div className="flex gap-2 h-28 shrink-0 overflow-x-auto">
                 {pinnedUserId !== 'local' && (
                   <LocalTile
-                    videoRef={setLocalVideoRef}
-                    name="You"
-                    isHost={isHost}
-                    isAudioEnabled={isAudioEnabled}
-                    isVideoEnabled={isVideoEnabled}
-                    isScreenSharing={isScreenSharing}
-                    isHandRaised={raisedHands.has(myId)}
-                    isPinned={false}
-                    onPin={() => setPinnedUserId('local')}
-                    onFullscreen={() => handleFullscreen('local')}
-                    thumbnail
+                    videoRef={setLocalVideoRef} name="You" isHost={isHost}
+                    isAudioEnabled={isAudioEnabled} isVideoEnabled={isVideoEnabled}
+                    isScreenSharing={isScreenSharing} isHandRaised={raisedHands.has(myId)}
+                    isPinned={false} onPin={() => setPinnedUserId('local')}
+                    onFullscreen={() => handleFullscreen('local')} thumbnail
                   />
                 )}
                 {remoteEntries.filter(([uid]) => uid !== pinnedUserId).map(([uid, stream]) => (
                   <RemoteTile key={uid} userId={uid} stream={stream}
-                    name={getParticipantName(uid)}
-                    isHandRaised={raisedHands.has(uid)}
-                    isPinned={false}
-                    onPin={() => setPinnedUserId(uid)}
-                    onFullscreen={() => handleFullscreen(uid)}
-                    thumbnail
+                    name={getParticipantName(uid)} isHandRaised={raisedHands.has(uid)}
+                    isPinned={false} onPin={() => setPinnedUserId(uid)}
+                    onFullscreen={() => handleFullscreen(uid)} thumbnail
                   />
                 ))}
               </div>
@@ -725,21 +783,15 @@ export default function MeetingRoom({ meetingId, user }) {
               totalParticipants <= 6 ? 'grid-cols-3' : 'grid-cols-4'
             )}>
               <LocalTile
-                videoRef={setLocalVideoRef}
-                name={myName}
-                isHost={isHost}
-                isAudioEnabled={isAudioEnabled}
-                isVideoEnabled={isVideoEnabled}
-                isScreenSharing={isScreenSharing}
-                isHandRaised={raisedHands.has(myId)}
-                isPinned={pinnedUserId === 'local'}
-                onPin={() => setPinnedUserId('local')}
+                videoRef={setLocalVideoRef} name={myName} isHost={isHost}
+                isAudioEnabled={isAudioEnabled} isVideoEnabled={isVideoEnabled}
+                isScreenSharing={isScreenSharing} isHandRaised={raisedHands.has(myId)}
+                isPinned={pinnedUserId === 'local'} onPin={() => setPinnedUserId('local')}
                 onFullscreen={() => handleFullscreen('local')}
               />
               {remoteEntries.map(([uid, stream]) => (
                 <RemoteTile key={uid} userId={uid} stream={stream}
-                  name={getParticipantName(uid)}
-                  isHandRaised={raisedHands.has(uid)}
+                  name={getParticipantName(uid)} isHandRaised={raisedHands.has(uid)}
                   isPinned={pinnedUserId === uid}
                   onPin={() => setPinnedUserId(p => p === uid ? null : uid)}
                   onFullscreen={() => handleFullscreen(uid)}
@@ -749,7 +801,6 @@ export default function MeetingRoom({ meetingId, user }) {
           )}
         </div>
 
-        {/* Chat sidebar */}
         {chatOpen && (
           <div className="w-80 bg-slate-900 border-l border-slate-800 flex flex-col shrink-0">
             <div className="p-4 border-b border-slate-800 flex items-center justify-between shrink-0">
@@ -799,13 +850,11 @@ export default function MeetingRoom({ meetingId, user }) {
         )}
       </div>
 
-      {/* FIX: Controls always at bottom — shrink-0 prevents compression, never scrolls off screen */}
       <ControlsBar />
     </div>
   );
 }
 
-// ── Local video tile ──
 function LocalTile({ videoRef, name, isHost, isAudioEnabled, isVideoEnabled,
   isScreenSharing, isHandRaised, isPinned, onPin, onFullscreen, large, thumbnail, isFullscreen }) {
   return (
@@ -813,11 +862,7 @@ function LocalTile({ videoRef, name, isHost, isAudioEnabled, isVideoEnabled,
       'relative bg-slate-800 rounded-xl overflow-hidden group',
       large ? 'w-full h-full' : thumbnail ? 'w-40 h-28 shrink-0' : 'w-full h-full'
     )}>
-      <video
-        ref={videoRef}
-        autoPlay muted playsInline
-        className="w-full h-full object-cover"
-      />
+      <video ref={videoRef} autoPlay muted playsInline className="w-full h-full object-cover" />
       <div className="absolute inset-0 opacity-0 group-hover:opacity-100 transition-opacity flex items-start justify-end p-2 gap-1">
         <TileBtn onClick={onPin} title={isPinned ? 'Unpin' : 'Pin'}>
           {isPinned ? <PinOff className="h-3.5 w-3.5" /> : <Pin className="h-3.5 w-3.5" />}
@@ -837,7 +882,6 @@ function LocalTile({ videoRef, name, isHost, isAudioEnabled, isVideoEnabled,
   );
 }
 
-// ── Remote video tile ──
 function RemoteTile({ userId, stream, name, isHandRaised, isPinned,
   onPin, onFullscreen, large, thumbnail, isFullscreen }) {
   const videoRef = useRef(null);

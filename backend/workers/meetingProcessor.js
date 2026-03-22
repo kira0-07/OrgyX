@@ -146,15 +146,23 @@ async function diarizeWithPyannote(audioPath, numSpeakers) {
 }
 
 function mergeTranscriptWithDiarization(groqSegments, diarSegments, attendeeNames) {
-  const speakerOrder = [];
+  // FIX: map speakers by total speaking time, not order of first appearance
+  // Order of appearance is unreliable — whoever happened to speak first gets
+  // mapped to attendeeNames[0] which may be wrong. Speaking time is more stable
+  // because the person who spoke most is likely the host/main speaker.
+  const speakingTime = {};
   for (const seg of diarSegments) {
-    if (!speakerOrder.includes(seg.speaker)) {
-      speakerOrder.push(seg.speaker);
-    }
+    const duration = (seg.end || 0) - (seg.start || 0);
+    speakingTime[seg.speaker] = (speakingTime[seg.speaker] || 0) + duration;
   }
 
+  // Sort pyannote speakers by speaking time descending
+  const sortedSpeakers = Object.keys(speakingTime).sort(
+    (a, b) => speakingTime[b] - speakingTime[a]
+  );
+
   const speakerMap = {};
-  speakerOrder.forEach((speaker, idx) => {
+  sortedSpeakers.forEach((speaker, idx) => {
     speakerMap[speaker] = attendeeNames[idx % attendeeNames.length];
   });
 

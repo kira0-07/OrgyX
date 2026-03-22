@@ -23,7 +23,9 @@ const generateAccessToken = (user) => {
       role: user.role,
       roleLevel: user.roleLevel,
       isAdmin: user.isAdmin,
-      superior: user.superior?.toString()
+      superior: user.superior?.toString(),
+      firstName: user.firstName,   // ← ADD THIS
+      lastName: user.lastName  
     },
     process.env.JWT_SECRET,
     { expiresIn: process.env.ACCESS_TOKEN_EXPIRY || '15m' }

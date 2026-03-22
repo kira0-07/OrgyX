@@ -12,11 +12,9 @@ const rateLimit = require('express-rate-limit');
 const slowDown = require('express-slow-down');
 const winston = require('winston');
 
-// Import configs
 const connectDB = require('./config/db');
 const { initializeCollections } = require('./config/chroma');
 
-// Import routes
 const {
   authRoutes,
   userRoutes,
@@ -32,7 +30,6 @@ const {
   adminRoutes
 } = require('./routes');
 
-// Logger setup
 const logger = winston.createLogger({
   level: process.env.LOG_LEVEL || 'info',
   format: winston.format.combine(
@@ -51,10 +48,9 @@ const logger = winston.createLogger({
   ]
 });
 
-// ── CORS origins — defined FIRST before anything uses them ──────────────────
 const allowedOrigins = [
   'https://orgos-swart.vercel.app',
-  'https://team-catalyst-v2-0.vercel.app', // ✅ added
+  'https://team-catalyst-v2-0.vercel.app',
   'http://localhost:3000',
   'http://localhost:3001',
   process.env.FRONTEND_URL,
@@ -70,12 +66,8 @@ const corsOptions = {
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization'],
 };
-// ────────────────────────────────────────────────────────────────────────────
 
-// Initialize app
 const app = express();
-
-// ✅ FIX: trust proxy for Railway
 app.set('trust proxy', 1);
 
 const server = http.createServer(app);
@@ -85,61 +77,38 @@ const io = new Server(server, {
     origin: allowedOrigins,
     credentials: true,
     methods: ['GET', 'POST'],
-  }
+  },
+  // Increase max payload for audio chunk uploads
+  maxHttpBufferSize: 10 * 1024 * 1024 // 10MB
 });
 
-// Connect to database
 connectDB();
-
-// Initialize ChromaDB
 initializeCollections().catch(err =>
   logger.error(`ChromaDB initialization failed: ${err.message}`)
 );
 
-// Security middleware
-app.use(helmet({
-  contentSecurityPolicy: false,
-  crossOriginEmbedderPolicy: false
-}));
-
-// CORS — must be before all routes
+app.use(helmet({ contentSecurityPolicy: false, crossOriginEmbedderPolicy: false }));
 app.use(cors(corsOptions));
-
-// Handle preflight OPTIONS requests explicitly
 app.options('*', cors(corsOptions));
-
-// Compression
 app.use(compression());
-
-// Body parsing
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 app.use(cookieParser());
+app.use(morgan('combined', { stream: { write: message => logger.info(message.trim()) } }));
 
-// Logging
-app.use(morgan('combined', {
-  stream: { write: message => logger.info(message.trim()) }
-}));
-
-// Rate limiting
 const generalLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 100,
-  message: {
-    success: false,
-    message: 'Too many requests, please try again later.'
-  }
+  message: { success: false, message: 'Too many requests, please try again later.' }
 });
 app.use('/api/', generalLimiter);
 
-// Speed limiting
 const speedLimiter = slowDown({
   windowMs: 15 * 60 * 1000,
   delayAfter: 50,
   delayMs: 500
 });
 
-// API routes
 app.use('/api/auth', authRoutes);
 app.use('/api/users', userRoutes);
 app.use('/api/meetings', meetingRoutes);
@@ -153,16 +122,21 @@ app.use('/api/audit', auditRoutes);
 app.use('/api/dashboard', dashboardRoutes);
 app.use('/api/admin', adminRoutes);
 
-// Health check
 app.get('/health', (req, res) => {
-  res.json({
-    status: 'ok',
-    timestamp: new Date().toISOString(),
-    uptime: process.uptime()
-  });
+  res.json({ status: 'ok', timestamp: new Date().toISOString(), uptime: process.uptime() });
 });
 
-// Socket.io setup
+// ─────────────────────────────────────────────────────────────────────────────
+// Per-device transcript queue
+// Structure: transcriptQueue[meetingId] = [
+//   { userId, userName, timestamp, audioBuffer, transcriptText }
+// ]
+// ─────────────────────────────────────────────────────────────────────────────
+const transcriptQueue = new Map();
+
+// Store participant names per room so we can use them for transcript labeling
+const roomParticipants = new Map(); // meetingId → { userId: userName }
+
 const rooms = new Map();
 
 io.use(async (socket, next) => {
@@ -182,37 +156,129 @@ io.use(async (socket, next) => {
 io.on('connection', (socket) => {
   logger.info(`Socket connected: ${socket.id}, user: ${socket.userId}`);
 
+  // Build display name from JWT (now includes firstName/lastName)
+  const getDisplayName = () => {
+    const first = socket.user?.firstName || '';
+    const last = socket.user?.lastName || '';
+    return `${first} ${last}`.trim() || socket.user?.email || 'Participant';
+  };
+
   socket.on('join-room', ({ meetingId, userId }) => {
     socket.join(meetingId);
+
     if (!rooms.has(meetingId)) {
       rooms.set(meetingId, { users: [], recording: false, raisedHands: new Set() });
     }
+    if (!roomParticipants.has(meetingId)) {
+      roomParticipants.set(meetingId, {});
+    }
+
     const room = rooms.get(meetingId);
-    room.users.push({ socketId: socket.id, userId, peerId: null });
+    const participants = roomParticipants.get(meetingId);
+
+    // Register this participant's name in the room
+    const displayName = getDisplayName();
+    participants[userId] = displayName;
+
+    room.users.push({ socketId: socket.id, userId, displayName });
+
+    // Tell other participants this person joined (with their name)
     socket.to(meetingId).emit('user-connected', userId);
+
+    // Send existing users list + participant names map to the new joiner
     socket.emit('existing-users', room.users.filter(u => u.socketId !== socket.id));
+    socket.emit('participant-names', participants); // ← NEW: send full name map
     socket.emit('recording-status', room.recording);
+
+    // Update everyone's participant name map
+    io.to(meetingId).emit('participant-joined', { userId, displayName });
   });
 
   socket.on('offer', ({ meetingId, offer, targetUserId }) => {
-    socket.to(meetingId).emit('offer', { offer, userId: socket.userId, targetUserId });
+    // Route offer only to the target user, not broadcast to everyone
+    const room = rooms.get(meetingId);
+    if (room) {
+      const targetUser = room.users.find(u => u.userId?.toString() === targetUserId?.toString());
+      if (targetUser) {
+        io.to(targetUser.socketId).emit('offer', { offer, userId: socket.userId });
+      } else {
+        // Fallback: broadcast to room
+        socket.to(meetingId).emit('offer', { offer, userId: socket.userId });
+      }
+    }
   });
 
   socket.on('answer', ({ meetingId, answer, targetUserId }) => {
-    socket.to(meetingId).emit('answer', { answer, userId: socket.userId, targetUserId });
+    const room = rooms.get(meetingId);
+    if (room) {
+      const targetUser = room.users.find(u => u.userId?.toString() === targetUserId?.toString());
+      if (targetUser) {
+        io.to(targetUser.socketId).emit('answer', { answer, userId: socket.userId });
+      } else {
+        socket.to(meetingId).emit('answer', { answer, userId: socket.userId });
+      }
+    }
   });
 
   socket.on('ice-candidate', ({ meetingId, candidate, targetUserId }) => {
-    socket.to(meetingId).emit('ice-candidate', { candidate, userId: socket.userId, targetUserId });
+    const room = rooms.get(meetingId);
+    if (room) {
+      const targetUser = room.users.find(u => u.userId?.toString() === targetUserId?.toString());
+      if (targetUser) {
+        io.to(targetUser.socketId).emit('ice-candidate', { candidate, userId: socket.userId });
+      } else {
+        socket.to(meetingId).emit('ice-candidate', { candidate, userId: socket.userId });
+      }
+    }
   });
 
+  // FIX: Chat message now always uses real name from JWT
   socket.on('chat-message', ({ meetingId, message }) => {
+    const displayName = getDisplayName();
     io.to(meetingId).emit('chat-message', {
       userId: socket.userId,
-      userName: `${socket.user?.firstName || ''} ${socket.user?.lastName || ''}`.trim() || 'Participant',
+      userName: displayName,
       message,
       timestamp: new Date().toISOString()
     });
+  });
+
+  // ── Per-device audio chunk for transcription ──────────────────────────────
+  // Each participant sends their own audio chunks every 30s
+  // Payload: { meetingId, audioChunk: ArrayBuffer, timestamp: number }
+  socket.on('audio-chunk', ({ meetingId, audioChunk, timestamp }) => {
+    if (!transcriptQueue.has(meetingId)) {
+      transcriptQueue.set(meetingId, []);
+    }
+    const queue = transcriptQueue.get(meetingId);
+    const displayName = getDisplayName();
+
+    queue.push({
+      userId: socket.userId,
+      userName: displayName,
+      timestamp: timestamp || Date.now(),
+      audioBuffer: Buffer.from(audioChunk),
+      transcriptText: null // filled in by worker after transcription
+    });
+
+    logger.info(`Audio chunk queued for ${displayName} in meeting ${meetingId}, queue size: ${queue.length}`);
+  });
+
+  // ── Host requests merged transcript queue when meeting ends ───────────────
+  socket.on('get-transcript-queue', ({ meetingId }) => {
+    const queue = transcriptQueue.get(meetingId) || [];
+    // Send back to host — sorted by timestamp
+    const sorted = [...queue].sort((a, b) => a.timestamp - b.timestamp);
+    socket.emit('transcript-queue', {
+      meetingId,
+      chunks: sorted.map(c => ({
+        userId: c.userId,
+        userName: c.userName,
+        timestamp: c.timestamp,
+        audioBuffer: c.audioBuffer,
+      }))
+    });
+    logger.info(`Sent transcript queue for meeting ${meetingId}: ${sorted.length} chunks`);
   });
 
   socket.on('raise-hand', ({ meetingId }) => {
@@ -263,7 +329,17 @@ io.on('connection', (socket) => {
         room.users.splice(userIndex, 1);
         room.raisedHands.delete(userId);
         socket.to(meetingId).emit('user-disconnected', userId);
-        if (room.users.length === 0) rooms.delete(meetingId);
+        if (room.users.length === 0) {
+          rooms.delete(meetingId);
+          // Clean up transcript queue when room is empty
+          // Keep it for a bit in case worker needs it
+          setTimeout(() => {
+            if (!rooms.has(meetingId)) {
+              transcriptQueue.delete(meetingId);
+              roomParticipants.delete(meetingId);
+            }
+          }, 30 * 60 * 1000); // 30 min
+        }
       }
     });
   });
@@ -271,7 +347,6 @@ io.on('connection', (socket) => {
 
 app.set('io', io);
 
-// Error handling
 app.use((err, req, res, next) => {
   logger.error(`Error: ${err.message}`);
   if (err.name === 'MulterError') {
@@ -286,12 +361,10 @@ app.use((err, req, res, next) => {
   });
 });
 
-// 404 handler
 app.use((req, res) => {
   res.status(404).json({ success: false, message: 'Route not found' });
 });
 
-// Start server
 const PORT = process.env.PORT || 5001;
 server.listen(PORT, () => {
   logger.info(`Server running on port ${PORT}`);
