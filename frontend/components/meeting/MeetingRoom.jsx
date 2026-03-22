@@ -384,7 +384,22 @@ export default function MeetingRoom({ meetingId, user }) {
         iceServers: [
           { urls: 'stun:stun.l.google.com:19302' },
           { urls: 'stun:stun1.l.google.com:19302' },
-          { urls: 'stun:stun2.l.google.com:19302' }
+          { urls: 'stun:stun2.l.google.com:19302' },
+          {
+            urls: 'turn:openrelay.metered.ca:80',
+            username: 'openrelayproject',
+            credential: 'openrelayproject'
+          },
+          {
+            urls: 'turn:openrelay.metered.ca:443',
+            username: 'openrelayproject',
+            credential: 'openrelayproject'
+          },
+          {
+            urls: 'turn:openrelay.metered.ca:443?transport=tcp',
+            username: 'openrelayproject',
+            credential: 'openrelayproject'
+          }
         ]
       }
     });
@@ -407,6 +422,15 @@ export default function MeetingRoom({ meetingId, user }) {
     peer.on('close', () => destroyPeer(userId));
     peer.on('error', (err) => {
       console.warn(`Peer error with ${userId}:`, err.message);
+      // Auto-retry once on connection failure after 3 seconds
+      if (err.message.includes('Connection failed') && localStreamRef.current) {
+        setTimeout(() => {
+          if (!peersRef.current[userId] || peersRef.current[userId].destroyed) {
+            console.log(`Retrying connection with ${userId}`);
+            createPeer(userId, true, localStreamRef.current);
+          }
+        }, 3000);
+      }
       setRemoteStreams(prev => { const n = { ...prev }; delete n[userId]; return n; });
     });
 
