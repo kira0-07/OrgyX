@@ -101,9 +101,6 @@ async function transcribeWithGroq(audioPath) {
   }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// PYANNOTE DIARIZATION
-// ─────────────────────────────────────────────────────────────────────────────
 async function diarizeWithPyannote(audioPath, numSpeakers) {
   try {
     const healthRes = await fetch(`${DIARIZATION_URL}/health`, { timeout: 5000 });
@@ -148,9 +145,6 @@ async function diarizeWithPyannote(audioPath, numSpeakers) {
   }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// MERGE PYANNOTE SPEAKER TIMELINE WITH GROQ WORD TIMESTAMPS
-// ─────────────────────────────────────────────────────────────────────────────
 function mergeTranscriptWithDiarization(groqSegments, diarSegments, attendeeNames) {
   const speakerOrder = [];
   for (const seg of diarSegments) {
@@ -184,11 +178,6 @@ function mergeTranscriptWithDiarization(groqSegments, diarSegments, attendeeName
   });
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// LLM SPEAKER INFERENCE (fallback when pyannote is unavailable)
-// FIX: minDuration reduced to 1.0s — was 2.0s which caused short speech
-// bursts from brief speakers to get merged into adjacent segments and lost.
-// ─────────────────────────────────────────────────────────────────────────────
 function mergeShortSegments(segments, minDuration = 1.0) {
   if (!segments || segments.length === 0) return [];
   const merged = [];
@@ -379,17 +368,10 @@ async function processMeeting(job) {
     const diarSegments = await diarizeWithPyannote(localAudioPath, numSpeakers);
 
     if (diarSegments && diarSegments.length > 0) {
-      // FIX: Never merge segments when using pyannote.
-      // Merging corrupts timestamps and causes lines to get lost.
-      // Pyannote handles short segments via min_duration_on in app.py.
       logger.info(`Using pyannote diarization (${diarSegments.length} diar segments)`);
       labeledSegments = mergeTranscriptWithDiarization(rawSegments, diarSegments, attendeeNames);
       meeting.speakerDiarizationMethod = 'pyannote';
     } else {
-      // FIX: threshold raised from 120s to 600s.
-      // Previously short meetings (under 2 min) were having segments merged
-      // which dropped lines. Now raw segments are used for all meetings
-      // under 10 minutes so nothing gets lost.
       logger.info('Pyannote unavailable — using LLM speaker inference fallback');
       const segmentsToLabel = rawDuration < 600
         ? rawSegments
@@ -399,16 +381,33 @@ async function processMeeting(job) {
       meeting.speakerDiarizationMethod = 'llm';
     }
 
-    meeting.transcriptSegments = labeledSegments.map(seg => ({
+    // Map labeled segments to final shape
+    const rawMappedSegments = labeledSegments.map(seg => ({
       speaker: seg.speaker || 'Unknown Speaker',
       startTime: seg.startTime || seg.start || 0,
       endTime: seg.endTime || seg.end || 0,
       text: seg.text || ''
     }));
 
+    // Remove duplicate segments caused by Groq Whisper hallucination on short audio
+    // Whisper sometimes repeats the same sentence slightly rephrased within a few seconds
+    const dedupedSegments = [];
+    for (const seg of rawMappedSegments) {
+      const isDuplicate = dedupedSegments.some(existing => {
+        const a = existing.text.trim().toLowerCase();
+        const b = seg.text.trim().toLowerCase();
+        const timeDiff = Math.abs(seg.startTime - existing.startTime);
+        const longer = Math.max(a.length, b.length);
+        const shorter = Math.min(a.length, b.length);
+        return timeDiff < 15 && longer > 0 && shorter / longer > 0.8;
+      });
+      if (!isDuplicate) dedupedSegments.push(seg);
+    }
+
+    meeting.transcriptSegments = dedupedSegments;
     meeting.speakerDiarizationEditable = true;
 
-    logger.info(`Final segments: ${meeting.transcriptSegments.length} (method: ${meeting.speakerDiarizationMethod})`);
+    logger.info(`Final segments: ${dedupedSegments.length} (before dedup: ${rawMappedSegments.length}, method: ${meeting.speakerDiarizationMethod})`);
     await updateStep(meetingId, 'diarization', 'done', 'Speaker identification complete', io);
 
     // Step 4: Analysis
