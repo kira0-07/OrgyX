@@ -1,1123 +1,763 @@
-const Meeting = require('../models/Meeting');
-const { User, Notification, AuditLog, PromptTemplate } = require('../models');
-const { Queue } = require('bullmq');
-const { chromaClient } = require('../config/chroma');
-const { ragMeetingQA, findSimilarMeetings } = require('../ai/prompts');
-const { uploadFile, deleteFile } = require('../config/s3');
-const winston = require('winston');
+const { Worker } = require('bullmq');
+const fs = require('fs');
 const path = require('path');
+const ffmpeg = require('fluent-ffmpeg');
+const { promisify } = require('util');
+const Groq = require('groq-sdk');
+const FormData = require('form-data');
+const fetch = require('node-fetch');
+const { Meeting, PromptTemplate, Performance, Notification } = require('../models');
+const { chromaClient } = require('../config/chroma');
+const { generateEmbedding } = require('../ai/embeddings');
+const { meetingAnalysisChain, chunkTranscript, scoreAttendeeChain } = require('../ai/langchain');
+const { getFileUrl, uploadFile } = require('../config/s3');
+const winston = require('winston');
+
+const execAsync = promisify(require('child_process').exec);
 
 const logger = winston.createLogger({
   level: 'info',
-  format: winston.format.combine(
-    winston.format.timestamp(),
-    winston.format.json()
-  ),
+  format: winston.format.combine(winston.format.timestamp(), winston.format.json()),
   transports: [new winston.transports.Console()]
 });
 
-// Initialize BullMQ queue
-let meetingQueue;
-try {
-  meetingQueue = new Queue('meeting-processing', {
-    connection: {
-      url: process.env.REDIS_URL
+const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
+
+const DIARIZATION_URL = process.env.DIARIZATION_URL || 'http://diarization:8001';
+
+async function updateStep(meetingId, step, status, message = null, io = null) {
+  const meeting = await Meeting.findById(meetingId);
+  if (meeting) {
+    const stepObj = meeting.processingSteps.find(s => s.step === step);
+    if (stepObj) {
+      stepObj.status = status;
+      stepObj.timestamp = new Date();
+      if (message) stepObj.message = message;
     }
-  });
-} catch (error) {
-  logger.error(`Failed to initialize meeting queue: ${error.message}`);
+    await meeting.save();
+    if (io) io.to(meetingId).emit('processing-update', { step, status, message });
+  }
 }
 
-// Create meeting
-exports.createMeeting = async (req, res) => {
+async function downloadAudio(audioKey) {
+  const url = await getFileUrl(audioKey, 3600);
+  const tempDir = '/temp';
+  if (!fs.existsSync(tempDir)) fs.mkdirSync(tempDir, { recursive: true });
+  const localPath = path.join(tempDir, `${Date.now()}-${path.basename(audioKey)}`);
+  const response = await fetch(url);
+  const buffer = await response.arrayBuffer();
+  fs.writeFileSync(localPath, Buffer.from(buffer));
+  return localPath;
+}
+
+function getAudioDuration(filePath) {
+  return new Promise((resolve) => {
+    ffmpeg.ffprobe(filePath, (err, metadata) => {
+      if (err) { logger.warn(`ffprobe error: ${err.message}`); return resolve(0); }
+      const duration = metadata?.format?.duration;
+      resolve(typeof duration === 'number' && !isNaN(duration) ? duration : 0);
+    });
+  });
+}
+
+async function splitAudio(filePath, chunkDuration = 600) {
+  const outputDir = '/temp/chunks';
+  if (!fs.existsSync(outputDir)) fs.mkdirSync(outputDir, { recursive: true });
+  const baseName = path.basename(filePath, path.extname(filePath));
+  const outputPattern = path.join(outputDir, `${baseName}_chunk_%03d.wav`);
+  return new Promise((resolve, reject) => {
+    ffmpeg(filePath)
+      .output(outputPattern)
+      .audioCodec('pcm_s16le')
+      .audioFrequency(16000)
+      .audioChannels(1)
+      .outputOptions([`-f segment`, `-segment_time ${chunkDuration}`, `-reset_timestamps 1`])
+      .on('end', () => {
+        const chunks = fs.readdirSync(outputDir)
+          .filter(f => f.startsWith(`${baseName}_chunk_`))
+          .map(f => path.join(outputDir, f))
+          .sort();
+        resolve(chunks);
+      })
+      .on('error', reject)
+      .run();
+  });
+}
+
+async function transcribeWithGroq(audioPath) {
   try {
-    const {
-      name,
-      description,
-      scheduledDate,
-      estimatedDuration,
-      domain,
-      agenda,
-      externalLink,
-      attendees
-    } = req.body;
-
-    const host = req.user.userId;
-
-    const attendeeUsers = await User.find({
-      _id: { $in: attendees.map(a => a.user || a) },
-      isActive: true
+    logger.info(`Transcribing: ${audioPath}`);
+    const audioStream = fs.createReadStream(audioPath);
+    const transcription = await groq.audio.transcriptions.create({
+      file: audioStream,
+      model: 'whisper-large-v3',
+      response_format: 'verbose_json',
+      language: 'en',
     });
-
-    if (attendeeUsers.length !== attendees.length) {
-      return res.status(400).json({
-        success: false,
-        message: 'One or more attendees not found or inactive'
-      });
-    }
-
-    const formattedAttendees = attendeeUsers.map(user => ({
-      user: user._id
-    }));
-
-    if (!formattedAttendees.find(a => a.user.toString() === host)) {
-      formattedAttendees.push({ user: host });
-    }
-
-    const meeting = new Meeting({
-      name,
-      description,
-      scheduledDate: new Date(scheduledDate),
-      estimatedDuration,
-      domain,
-      agenda,
-      externalLink,
-      host,
-      attendees: formattedAttendees,
-      status: 'scheduled',
-      processingSteps: [
-        { step: 'upload', status: 'pending' },
-        { step: 'transcription', status: 'pending' },
-        { step: 'diarization', status: 'pending' },
-        { step: 'analysis', status: 'pending' },
-        { step: 'embedding', status: 'pending' },
-        { step: 'ready', status: 'pending' }
-      ]
-    });
-
-    await meeting.save();
-
-    const notifications = attendeeUsers
-      .filter(u => u._id.toString() !== host)
-      .map(user => ({
-        user: user._id,
-        type: 'meeting_invite',
-        title: `Meeting invitation: ${name}`,
-        message: `You've been invited to ${domain}: ${name}`,
-        link: `/meetings/${meeting._id}`,
-        entityType: 'meeting',
-        entityId: meeting._id
-      }));
-
-    await Notification.insertMany(notifications);
-
-    await AuditLog.create({
-      user: host,
-      action: 'meeting_create',
-      resourceType: 'meeting',
-      resourceId: meeting._id,
-      newValue: { name, domain, scheduledDate },
-      success: true,
-      ipAddress: req.ip
-    });
-
-    res.status(201).json({
-      success: true,
-      message: 'Meeting scheduled successfully',
-      meeting
-    });
+    return transcription;
   } catch (error) {
-    logger.error(`Create meeting error: ${error.message}`);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to create meeting'
-    });
+    logger.error(`Groq transcription error: ${error.message}`);
+    throw error;
   }
-};
+}
 
-// Get all meetings
-exports.getMeetings = async (req, res) => {
+async function diarizeWithPyannote(audioPath, numSpeakers) {
   try {
-    const {
-      status,
-      domain,
-      startDate,
-      endDate,
-      search,
-      page = 1,
-      limit = 20
-    } = req.query;
-
-    // ✅ FIX: Always enforce access control using $and
-    // Previously, the search $or overwrote the access $or — exposing all meetings to any user
-    const accessFilter = {
-      $or: [
-        { host: req.user.userId },
-        { 'attendees.user': req.user.userId }
-      ]
-    };
-
-    const conditions = [accessFilter];
-
-    if (status) conditions.push({ status });
-    if (domain) conditions.push({ domain });
-
-    if (search) {
-      // ✅ Search is wrapped separately and combined with $and
-      // so access control is NEVER overwritten
-      conditions.push({
-        $or: [
-          { name: { $regex: search, $options: 'i' } },
-          { description: { $regex: search, $options: 'i' } }
-        ]
-      });
+    const healthRes = await fetch(`${DIARIZATION_URL}/health`, { timeout: 5000 });
+    const health = await healthRes.json();
+    if (!health.pipeline_loaded) {
+      logger.warn('Pyannote pipeline not loaded — falling back to LLM diarization');
+      return null;
     }
 
-    if (startDate || endDate) {
-      const dateFilter = {};
-      if (startDate) dateFilter.$gte = new Date(startDate);
-      if (endDate) dateFilter.$lte = new Date(endDate);
-      conditions.push({ scheduledDate: dateFilter });
-    }
+    logger.info(`Sending audio to pyannote diarization service (num_speakers=${numSpeakers})`);
 
-    const query = conditions.length > 1 ? { $and: conditions } : accessFilter;
-
-    const meetings = await Meeting.find(query)
-      .populate('host', 'firstName lastName email role')
-      .populate('attendees.user', 'firstName lastName email avatar')
-      .sort({ scheduledDate: -1 })
-      .skip((page - 1) * limit)
-      .limit(parseInt(limit));
-
-    const total = await Meeting.countDocuments(query);
-
-    res.json({
-      success: true,
-      meetings,
-      pagination: {
-        page: parseInt(page),
-        limit: parseInt(limit),
-        total,
-        pages: Math.ceil(total / limit)
-      }
+    const form = new FormData();
+    form.append('file', fs.createReadStream(audioPath), {
+      filename: path.basename(audioPath),
+      contentType: 'audio/wav'
     });
+
+    const url = numSpeakers > 1
+      ? `${DIARIZATION_URL}/diarize?num_speakers=${numSpeakers}`
+      : `${DIARIZATION_URL}/diarize`;
+
+    const response = await fetch(url, {
+      method: 'POST',
+      body: form,
+      headers: form.getHeaders(),
+      timeout: 300000
+    });
+
+    if (!response.ok) {
+      const err = await response.text();
+      logger.warn(`Pyannote diarization failed: ${err} — falling back to LLM`);
+      return null;
+    }
+
+    const result = await response.json();
+    logger.info(`Pyannote diarization complete: ${result.segments.length} segments, ${result.num_speakers_detected} speakers`);
+    return result.segments;
+
   } catch (error) {
-    logger.error(`Get meetings error: ${error.message}`);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to get meetings'
-    });
+    logger.warn(`Pyannote service unreachable: ${error.message} — falling back to LLM diarization`);
+    return null;
   }
-};
+}
 
-// Get single meeting
-exports.getMeeting = async (req, res) => {
-  try {
-    const { id } = req.params;
-
-    const meeting = await Meeting.findById(id)
-      .populate('host', 'firstName lastName email role avatar')
-      .populate('attendees.user', 'firstName lastName email avatar role')
-      .populate('actionItems.owner', 'firstName lastName email')
-      .populate('parentMeetingId', 'name scheduledDate');
-
-    if (!meeting) {
-      return res.status(404).json({
-        success: false,
-        message: 'Meeting not found'
-      });
-    }
-
-    const hasAccess =
-      meeting.host?._id?.toString() === req.user.userId ||
-      meeting.attendees?.some(a => a.user?._id?.toString() === req.user.userId) ||
-      req.user.isAdmin;
-
-    if (!hasAccess) {
-      return res.status(403).json({
-        success: false,
-        message: 'Access denied'
-      });
-    }
-
-    res.json({
-      success: true,
-      meeting
-    });
-  } catch (error) {
-    logger.error(`Get meeting error: ${error.message}`);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to get meeting'
-    });
+function mergeTranscriptWithDiarization(groqSegments, diarSegments, attendeeNames) {
+  const speakingTime = {};
+  for (const seg of diarSegments) {
+    const duration = (seg.end || 0) - (seg.start || 0);
+    speakingTime[seg.speaker] = (speakingTime[seg.speaker] || 0) + duration;
   }
-};
 
-// Update meeting
-exports.updateMeeting = async (req, res) => {
-  try {
-    const { id } = req.params;
-    const updates = req.body;
+  const sortedSpeakers = Object.keys(speakingTime).sort(
+    (a, b) => speakingTime[b] - speakingTime[a]
+  );
 
-    const meeting = await Meeting.findById(id);
+  const speakerMap = {};
+  sortedSpeakers.forEach((speaker, idx) => {
+    speakerMap[speaker] = attendeeNames[idx % attendeeNames.length];
+  });
 
-    if (!meeting) {
-      return res.status(404).json({
-        success: false,
-        message: 'Meeting not found'
-      });
-    }
+  logger.info(`Speaker mapping: ${JSON.stringify(speakerMap)}`);
 
-    if (meeting.host.toString() !== req.user.userId && !req.user.isAdmin) {
-      return res.status(403).json({
-        success: false,
-        message: 'Only host can update meeting'
-      });
-    }
+  return groqSegments.map(seg => {
+    const midpoint = ((seg.start || 0) + (seg.end || 0)) / 2;
+    const diarSeg = diarSegments.find(d => d.start <= midpoint && midpoint <= d.end);
+    const closestSeg = diarSeg || diarSegments.reduce((closest, d) => {
+      if (!closest) return d;
+      const distCurrent = Math.abs(d.start - midpoint);
+      const distClosest = Math.abs(closest.start - midpoint);
+      return distCurrent < distClosest ? d : closest;
+    }, null);
 
-    if (['processing', 'ready'].includes(meeting.status)) {
-      return res.status(400).json({
-        success: false,
-        message: 'Cannot update meeting after processing has started'
-      });
-    }
+    const speaker = closestSeg
+      ? (speakerMap[closestSeg.speaker] || attendeeNames[0])
+      : attendeeNames[0];
 
-    const oldValue = { ...meeting.toObject() };
-    Object.assign(meeting, updates);
-    await meeting.save();
+    return { ...seg, speaker };
+  });
+}
 
-    await AuditLog.create({
-      user: req.user.userId,
-      action: 'meeting_update',
-      resourceType: 'meeting',
-      resourceId: meeting._id,
-      oldValue,
-      newValue: updates,
-      success: true,
-      ipAddress: req.ip
-    });
+function mergeShortSegments(segments, minDuration = 1.0) {
+  if (!segments || segments.length === 0) return [];
+  const merged = [];
+  let current = { ...segments[0] };
 
-    res.json({
-      success: true,
-      message: 'Meeting updated',
-      meeting
-    });
-  } catch (error) {
-    logger.error(`Update meeting error: ${error.message}`);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to update meeting'
-    });
-  }
-};
+  for (let i = 1; i < segments.length; i++) {
+    const seg = segments[i];
+    const duration = (current.end || 0) - (current.start || 0);
+    const endsWithPunctuation = /[.!?]$/.test(current.text?.trim() || '');
 
-// Delete meeting
-exports.deleteMeeting = async (req, res) => {
-  try {
-    const { id } = req.params;
-
-    const meeting = await Meeting.findById(id);
-
-    if (!meeting) {
-      return res.status(404).json({
-        success: false,
-        message: 'Meeting not found'
-      });
-    }
-
-    if (meeting.host.toString() !== req.user.userId && !req.user.isAdmin) {
-      return res.status(403).json({
-        success: false,
-        message: 'Only host can delete meeting'
-      });
-    }
-
-    if (meeting.recordingUrl) {
-      try {
-        const key = meeting.recordingUrl.split('/').pop();
-        await deleteFile(`meetings/${id}/${key}`);
-      } catch (err) {
-        logger.warn(`Failed to delete recording: ${err.message}`);
-      }
-    }
-
-    try {
-      const collection = await chromaClient.getCollection({ name: 'meeting_transcripts' });
-      await collection.delete({ where: { meetingId: id } });
-    } catch (err) {
-      logger.warn(`Failed to delete from ChromaDB: ${err.message}`);
-    }
-
-    await Meeting.findByIdAndDelete(id);
-
-    await AuditLog.create({
-      user: req.user.userId,
-      action: 'meeting_delete',
-      resourceType: 'meeting',
-      resourceId: id,
-      success: true,
-      ipAddress: req.ip
-    });
-
-    res.json({
-      success: true,
-      message: 'Meeting deleted'
-    });
-  } catch (error) {
-    logger.error(`Delete meeting error: ${error.message}`);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to delete meeting'
-    });
-  }
-};
-
-// End meeting
-exports.endMeeting = async (req, res) => {
-  try {
-    const { id } = req.params;
-
-    const meeting = await Meeting.findById(id);
-
-    if (!meeting) {
-      return res.status(404).json({
-        success: false,
-        message: 'Meeting not found'
-      });
-    }
-
-    if (meeting.host.toString() !== req.user.userId && !req.user.isAdmin) {
-      return res.status(403).json({
-        success: false,
-        message: 'Only the host can end this meeting'
-      });
-    }
-
-    if (['completed', 'cancelled', 'processing', 'ready'].includes(meeting.status)) {
-      return res.status(400).json({
-        success: false,
-        message: `Meeting is already ${meeting.status}`
-      });
-    }
-
-    meeting.attendees.forEach(attendee => {
-      if (attendee.attended && !attendee.leftAt) {
-        attendee.leftAt = new Date();
-      }
-    });
-
-    meeting.status = 'completed';
-    meeting.endedAt = new Date();
-
-    if (meeting.startedAt) {
-      meeting.actualDuration = Math.round(
-        (meeting.endedAt - meeting.startedAt) / 60000
-      );
-    }
-
-    await meeting.save();
-
-    const attendeeIds = meeting.attendees
-      .map(a => a.user)
-      .filter(uid => uid.toString() !== req.user.userId);
-
-    if (attendeeIds.length > 0) {
-      const notifications = attendeeIds.map(uid => ({
-        user: uid,
-        type: 'meeting_ended',
-        title: `Meeting ended: ${meeting.name}`,
-        message: `The meeting "${meeting.name}" has been ended by the host.`,
-        link: `/meetings/${meeting._id}`,
-        entityType: 'meeting',
-        entityId: meeting._id
-      }));
-      await Notification.insertMany(notifications);
-    }
-
-    const io = req.app.get('io');
-    if (io) {
-      io.to(id).emit('meeting-ended', {
-        meetingId: id,
-        endedAt: meeting.endedAt
-      });
-    }
-
-    await AuditLog.create({
-      user: req.user.userId,
-      action: 'meeting_end',
-      resourceType: 'meeting',
-      resourceId: id,
-      newValue: { status: 'completed', endedAt: meeting.endedAt },
-      success: true,
-      ipAddress: req.ip
-    });
-
-    res.json({
-      success: true,
-      message: 'Meeting ended successfully',
-      meeting
-    });
-  } catch (error) {
-    logger.error(`End meeting error: ${error.message}`);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to end meeting'
-    });
-  }
-};
-
-// Upload recording from room — PERMANENT FIX
-// Queue the BullMQ job BEFORE saving the meeting and sending the response
-// so that even if the client disconnects early, the job is already in Redis
-exports.uploadRecording = async (req, res) => {
-  try {
-    const { id } = req.params;
-
-    if (!req.file) {
-      return res.status(400).json({
-        success: false,
-        message: 'No file uploaded'
-      });
-    }
-
-    const meeting = await Meeting.findById(id);
-
-    if (!meeting) {
-      return res.status(404).json({
-        success: false,
-        message: 'Meeting not found'
-      });
-    }
-
-    if (meeting.host.toString() !== req.user.userId) {
-      return res.status(403).json({
-        success: false,
-        message: 'Only host can upload recording'
-      });
-    }
-
-    // Upload to S3
-    const key = `meetings/${id}/recording-${Date.now()}.webm`;
-    await uploadFile(key, req.file.buffer, req.file.mimetype);
-
-    // Parse perDeviceAudio if present
-    let perDeviceAudio = null;
-    try {
-      if (req.body.perDeviceAudio) {
-        perDeviceAudio = typeof req.body.perDeviceAudio === 'string'
-          ? JSON.parse(req.body.perDeviceAudio)
-          : req.body.perDeviceAudio;
-        logger.info(`Per-device audio received for ${perDeviceAudio.length} participants`);
-      }
-    } catch (e) {
-      logger.warn(`Failed to parse perDeviceAudio: ${e.message}`);
-    }
-
-    // ── PERMANENT FIX: Queue the job FIRST before saving meeting or responding ──
-    // This ensures the job is safely in Redis even if the HTTP connection drops
-    let jobId = null;
-    if (meetingQueue) {
-      const jobData = {
-        meetingId: id,
-        audioKey: key,
-        ...(perDeviceAudio && perDeviceAudio.length > 0 ? { perDeviceAudio } : {})
+    if (duration < minDuration || !endsWithPunctuation) {
+      current = {
+        ...current,
+        end: seg.end,
+        text: (current.text || '').trim() + ' ' + (seg.text || '').trim()
       };
-
-      const job = await meetingQueue.add('process-meeting', jobData, {
-        attempts: 3,
-        backoff: { type: 'exponential', delay: 5000 }
-      });
-      jobId = job.id;
-      logger.info(`Job ${jobId} queued for meeting ${id} BEFORE response`);
+    } else {
+      merged.push(current);
+      current = { ...seg };
     }
+  }
+  merged.push(current);
+  return merged;
+}
 
-    // Now safely update the meeting document
-    meeting.recordingUrl = key;
-    meeting.recordingSource = 'room';
-    meeting.status = 'processing';
-    meeting.processingSteps.forEach(step => {
-      if (step.step === 'upload') {
-        step.status = 'done';
-        step.timestamp = new Date();
+async function inferSpeakersWithLLM(segments, attendeeNames) {
+  if (!segments || segments.length === 0) return [];
+
+  if (attendeeNames.length === 1) {
+    return segments.map(seg => ({ ...seg, speaker: attendeeNames[0] }));
+  }
+
+  const batchSize = 30;
+  const allLabeled = [];
+
+  for (let batchStart = 0; batchStart < segments.length; batchStart += batchSize) {
+    const batch = segments.slice(batchStart, batchStart + batchSize);
+
+    const segmentList = batch.map((seg, localIdx) =>
+      `[${localIdx}] ${seg.text?.trim()}`
+    ).join('\n');
+
+    const prompt = `You are analyzing a meeting transcript. The meeting has exactly these attendees (use ONLY these exact names, no titles or roles):
+${attendeeNames.map((n, i) => `- Speaker ${i + 1}: ${n}`).join('\n')}
+
+Rules:
+1. Use ONLY the exact names listed above
+2. Assign each segment to one speaker based on conversation flow and context
+3. Look for: questions followed by answers, topic handoffs, first-person references
+4. A speaker can have multiple consecutive segments
+5. If truly uncertain, assign to the speaker who spoke most recently
+
+Segments to label:
+${segmentList}
+
+Return ONLY a valid JSON array (no markdown, no explanation):
+[{"index":0,"speaker":"${attendeeNames[0]}"},{"index":1,"speaker":"${attendeeNames[Math.min(1, attendeeNames.length - 1)]}"}]`;
+
+    try {
+      const response = await groq.chat.completions.create({
+        model: 'llama-3.3-70b-versatile',
+        messages: [{ role: 'user', content: prompt }],
+        temperature: 0.1,
+        max_tokens: 4096
+      });
+
+      const content = response.choices[0]?.message?.content || '[]';
+      const clean = content.replace(/```json|```/g, '').trim();
+      let assignments = [];
+      try {
+        assignments = JSON.parse(clean);
+      } catch (parseErr) {
+        const match = clean.match(/\[[\s\S]*\]/);
+        if (match) assignments = JSON.parse(match[0]);
       }
-    });
 
-    // Save perDeviceAudioKeys so requeue script can find them later if needed
-    if (perDeviceAudio && perDeviceAudio.length > 0) {
-      meeting.perDeviceAudioKeys = perDeviceAudio;
+      batch.forEach((seg, localIdx) => {
+        const assignment = assignments.find(a => a.index === localIdx);
+        const assignedName = assignment?.speaker?.trim();
+        const validName = attendeeNames.includes(assignedName)
+          ? assignedName
+          : attendeeNames[localIdx % attendeeNames.length];
+        allLabeled.push({ ...seg, speaker: validName });
+      });
+
+    } catch (error) {
+      logger.warn(`LLM speaker inference failed for batch at ${batchStart}: ${error.message}`);
+      batch.forEach((seg, localIdx) => {
+        allLabeled.push({
+          ...seg,
+          speaker: attendeeNames[(batchStart + localIdx) % attendeeNames.length]
+        });
+      });
     }
-
-    await meeting.save();
-
-    res.json({
-      success: true,
-      message: 'Recording uploaded and queued for processing',
-      meeting,
-      jobId
-    });
-  } catch (error) {
-    logger.error(`Upload recording error: ${error.message}`);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to upload recording'
-    });
   }
-};
 
-// Manual audio upload
-exports.manualUpload = async (req, res) => {
-  try {
-    const {
-      name,
-      scheduledDate,
-      domain,
-      agenda,
-      attendees
-    } = req.body;
+  return allLabeled;
+}
 
-    if (!req.file) {
-      return res.status(400).json({
-        success: false,
-        message: 'No audio file uploaded'
-      });
+// ─────────────────────────────────────────────────────────────────────────────
+// Per-device transcription pipeline
+// Each participant's audio is transcribed separately with their name already known
+// No pyannote needed — speaker attribution is 100% accurate
+// Segments are merged by timestamp to create a chronological transcript
+// ─────────────────────────────────────────────────────────────────────────────
+async function processPerDeviceAudio(perDeviceAudio, meetingId) {
+  logger.info(`Processing per-device audio for ${perDeviceAudio.length} participants`);
+
+  const tempDir = '/temp';
+  if (!fs.existsSync(tempDir)) fs.mkdirSync(tempDir, { recursive: true });
+
+  const allSegments = [];
+
+  for (const device of perDeviceAudio) {
+    const { userId, userName, audioKey } = device;
+    logger.info(`Transcribing audio for ${userName} (${userId})`);
+
+    let localPath = null;
+    try {
+      // Download this person's audio from S3
+      localPath = await downloadAudio(audioKey);
+
+      // Check file is valid and has content
+      const stat = fs.statSync(localPath);
+      if (stat.size < 1000) {
+        logger.warn(`Audio for ${userName} too small (${stat.size} bytes) — skipping`);
+        continue;
+      }
+
+      // Transcribe with Groq — speaker is already known, no diarization needed
+      const result = await transcribeWithGroq(localPath);
+      const segments = result?.segments || [];
+
+      logger.info(`${userName}: ${segments.length} segments transcribed`);
+
+      // Tag each segment with this person's name and real timestamps
+      for (const seg of segments) {
+        const text = seg.text?.trim();
+        if (!text || text.length < 2) continue;
+
+        allSegments.push({
+          speaker: userName,
+          text,
+          startTime: seg.start || 0,
+          endTime: seg.end || 0,
+          start: seg.start || 0,
+          end: seg.end || 0,
+          userId,
+          source: 'per-device' // mark as per-device for debugging
+        });
+      }
+
+    } catch (e) {
+      logger.warn(`Failed to process audio for ${userName}: ${e.message}`);
+    } finally {
+      if (localPath) {
+        try { fs.unlinkSync(localPath); } catch (e) {}
+      }
     }
-
-    const allowedTypes = ['audio/mpeg', 'audio/wav', 'audio/wave', 'audio/x-wav', 'audio/mp4', 'audio/x-m4a'];
-    if (!allowedTypes.includes(req.file.mimetype)) {
-      return res.status(400).json({
-        success: false,
-        message: 'Invalid file type. Allowed: MP3, WAV, M4A'
-      });
-    }
-
-    if (req.file.size > 100 * 1024 * 1024) {
-      return res.status(400).json({
-        success: false,
-        message: 'File too large. Maximum size: 100MB'
-      });
-    }
-
-    const host = req.user.userId;
-
-    const attendeeUsers = await User.find({
-      _id: { $in: attendees.map(a => a.user || a) },
-      isActive: true
-    });
-
-    const formattedAttendees = attendeeUsers.map(user => ({
-      user: user._id
-    }));
-
-    if (!formattedAttendees.find(a => a.user.toString() === host)) {
-      formattedAttendees.push({ user: host });
-    }
-
-    const meeting = new Meeting({
-      name,
-      scheduledDate: new Date(scheduledDate),
-      domain,
-      agenda,
-      host,
-      attendees: formattedAttendees,
-      status: 'processing',
-      recordingSource: 'upload',
-      processingSteps: [
-        { step: 'upload', status: 'done', timestamp: new Date() },
-        { step: 'transcription', status: 'running' },
-        { step: 'diarization', status: 'pending' },
-        { step: 'analysis', status: 'pending' },
-        { step: 'embedding', status: 'pending' },
-        { step: 'ready', status: 'pending' }
-      ]
-    });
-
-    const ext = path.extname(req.file.originalname) || '.mp3';
-    const key = `meetings/${meeting._id}/upload-${Date.now()}${ext}`;
-    await uploadFile(key, req.file.buffer, req.file.mimetype);
-
-    meeting.recordingUrl = key;
-    await meeting.save();
-
-    if (meetingQueue) {
-      await meetingQueue.add('process-meeting', {
-        meetingId: meeting._id.toString(),
-        audioKey: key
-      }, {
-        attempts: 3,
-        backoff: { type: 'exponential', delay: 5000 }
-      });
-    }
-
-    res.status(201).json({
-      success: true,
-      message: 'Audio uploaded and queued for processing',
-      meeting
-    });
-  } catch (error) {
-    logger.error(`Manual upload error: ${error.message}`);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to upload audio'
-    });
   }
-};
 
-// Get processing status
-exports.getProcessingStatus = async (req, res) => {
-  try {
-    const { id } = req.params;
-
-    const meeting = await Meeting.findById(id)
-      .select('status processingSteps processingError host attendees');
-
-    if (!meeting) {
-      return res.status(404).json({
-        success: false,
-        message: 'Meeting not found'
-      });
-    }
-
-    const hasAccess =
-      meeting.host?.toString() === req.user.userId ||
-      meeting.attendees?.some(a => a.user?.toString() === req.user.userId) ||
-      req.user.isAdmin;
-
-    if (!hasAccess) {
-      return res.status(403).json({
-        success: false,
-        message: 'Access denied'
-      });
-    }
-
-    res.json({
-      success: true,
-      status: meeting.status,
-      processingSteps: meeting.processingSteps,
-      error: meeting.processingError
-    });
-  } catch (error) {
-    logger.error(`Get processing status error: ${error.message}`);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to get processing status'
-    });
+  if (allSegments.length === 0) {
+    logger.warn('No segments from per-device audio — will fall back to mixed audio');
+    return null;
   }
-};
 
-// RAG Q&A
-exports.meetingQA = async (req, res) => {
-  try {
-    const { id } = req.params;
-    const { question } = req.body;
+  // Sort all segments by start time to create chronological transcript
+  allSegments.sort((a, b) => a.startTime - b.startTime);
 
-    if (!question) {
-      return res.status(400).json({
-        success: false,
-        message: 'Question is required'
-      });
-    }
-
-    const meeting = await Meeting.findById(id);
-
-    if (!meeting) {
-      return res.status(404).json({
-        success: false,
-        message: 'Meeting not found'
-      });
-    }
-
-    const hasAccess =
-      meeting.host.toString() === req.user.userId ||
-      meeting.attendees.some(a => a.user.toString() === req.user.userId) ||
-      req.user.isAdmin;
-
-    if (!hasAccess) {
-      return res.status(403).json({
-        success: false,
-        message: 'Access denied'
-      });
-    }
-
-    if (meeting.status !== 'ready') {
-      return res.status(400).json({
-        success: false,
-        message: 'Meeting is still being processed'
-      });
-    }
-
-    const result = await ragMeetingQA(question, id);
-
-    res.json({
-      success: true,
-      answer: result.answer,
-      sources: result.sources
+  // Deduplication — remove hallucinated repeats within 15 seconds with 80% similarity
+  const dedupedSegments = [];
+  for (const seg of allSegments) {
+    const isDuplicate = dedupedSegments.some(existing => {
+      const a = existing.text.trim().toLowerCase();
+      const b = seg.text.trim().toLowerCase();
+      const timeDiff = Math.abs(seg.startTime - existing.startTime);
+      const longer = Math.max(a.length, b.length);
+      const shorter = Math.min(a.length, b.length);
+      return timeDiff < 15 && longer > 0 && shorter / longer > 0.8;
     });
-  } catch (error) {
-    logger.error(`Meeting QA error: ${error.message}`);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to process question'
-    });
+    if (!isDuplicate) dedupedSegments.push(seg);
   }
-};
 
-// Get similar meetings
-exports.getSimilarMeetings = async (req, res) => {
+  logger.info(`Per-device pipeline complete: ${dedupedSegments.length} segments from ${perDeviceAudio.length} participants`);
+  return dedupedSegments;
+}
+
+function formatTime(seconds) {
+  const mins = Math.floor(seconds / 60);
+  const secs = Math.floor(seconds % 60);
+  return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+}
+
+async function processMeeting(job) {
+  const { meetingId, audioKey, perDeviceAudio } = job.data;
+  const io = global.io;
+  logger.info(`Starting processing for meeting ${meetingId}`);
+  logger.info(`Per-device audio available: ${perDeviceAudio?.length || 0} participants`);
+
   try {
-    const { id } = req.params;
-
-    const meeting = await Meeting.findById(id);
-
-    if (!meeting) {
-      return res.status(404).json({
-        success: false,
-        message: 'Meeting not found'
-      });
-    }
-
-    const hasAccess =
-      meeting.host.toString() === req.user.userId ||
-      meeting.attendees.some(a => a.user.toString() === req.user.userId) ||
-      req.user.isAdmin;
-
-    if (!hasAccess) {
-      return res.status(403).json({
-        success: false,
-        message: 'Access denied'
-      });
-    }
-
-    const similar = await findSimilarMeetings(id, 3);
-
-    res.json({
-      success: true,
-      similarMeetings: similar
-    });
-  } catch (error) {
-    logger.error(`Get similar meetings error: ${error.message}`);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to get similar meetings'
-    });
-  }
-};
-
-// Schedule follow-up meeting
-exports.scheduleFollowup = async (req, res) => {
-  try {
-    const { id } = req.params;
-    const meetingData = req.body;
-
-    const parentMeeting = await Meeting.findById(id);
-
-    if (!parentMeeting) {
-      return res.status(404).json({
-        success: false,
-        message: 'Parent meeting not found'
-      });
-    }
-
-    const hasAccess =
-      parentMeeting.host.toString() === req.user.userId ||
-      req.user.isAdmin;
-
-    if (!hasAccess) {
-      return res.status(403).json({
-        success: false,
-        message: 'Only host can schedule follow-up'
-      });
-    }
-
-    const followUpMeeting = new Meeting({
-      ...meetingData,
-      host: req.user.userId,
-      attendees: meetingData.attendees || parentMeeting.attendees,
-      domain: meetingData.domain || parentMeeting.domain,
-      agenda: meetingData.agenda || parentMeeting.followUpTopics?.join('\n'),
-      parentMeetingId: parentMeeting._id,
-      status: 'scheduled',
-      processingSteps: [
-        { step: 'upload', status: 'pending' },
-        { step: 'transcription', status: 'pending' },
-        { step: 'diarization', status: 'pending' },
-        { step: 'analysis', status: 'pending' },
-        { step: 'embedding', status: 'pending' },
-        { step: 'ready', status: 'pending' }
-      ]
-    });
-
-    await followUpMeeting.save();
-
-    parentMeeting.childMeetingIds.push(followUpMeeting._id);
-    await parentMeeting.save();
-
-    const notifications = followUpMeeting.attendees
-      .filter(a => a.user.toString() !== req.user.userId)
-      .map(a => ({
-        user: a.user,
-        type: 'follow_up_reminder',
-        title: `Follow-up meeting scheduled`,
-        message: `A follow-up to "${parentMeeting.name}" has been scheduled`,
-        link: `/meetings/${followUpMeeting._id}`,
-        entityType: 'meeting',
-        entityId: followUpMeeting._id
-      }));
-
-    await Notification.insertMany(notifications);
-
-    res.status(201).json({
-      success: true,
-      message: 'Follow-up meeting scheduled',
-      meeting: followUpMeeting
-    });
-  } catch (error) {
-    logger.error(`Schedule follow-up error: ${error.message}`);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to schedule follow-up'
-    });
-  }
-};
-
-// Join meeting
-exports.joinMeeting = async (req, res) => {
-  try {
-    const { id } = req.params;
-
-    const meeting = await Meeting.findById(id);
-
-    if (!meeting) {
-      return res.status(404).json({
-        success: false,
-        message: 'Meeting not found'
-      });
-    }
-
-    const attendeeIndex = meeting.attendees.findIndex(
-      a => a.user.toString() === req.user.userId
-    );
-
-    if (attendeeIndex === -1) {
-      return res.status(403).json({
-        success: false,
-        message: 'Not invited to this meeting'
-      });
-    }
-
-    meeting.attendees[attendeeIndex].attended = true;
-    meeting.attendees[attendeeIndex].joinedAt = new Date();
-
-    if (meeting.status === 'scheduled') {
-      meeting.status = 'live';
-      meeting.startedAt = new Date();
-    }
-
-    await meeting.save();
-
-    await AuditLog.create({
-      user: req.user.userId,
-      action: 'meeting_join',
-      resourceType: 'meeting',
-      resourceId: id,
-      success: true,
-      ipAddress: req.ip
-    });
-
-    res.json({
-      success: true,
-      message: 'Joined meeting',
-      meeting
-    });
-  } catch (error) {
-    logger.error(`Join meeting error: ${error.message}`);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to join meeting'
-    });
-  }
-};
-
-// Leave meeting
-exports.leaveMeeting = async (req, res) => {
-  try {
-    const { id } = req.params;
-
-    const meeting = await Meeting.findById(id);
-
-    if (!meeting) {
-      return res.status(404).json({
-        success: false,
-        message: 'Meeting not found'
-      });
-    }
-
-    const attendeeIndex = meeting.attendees.findIndex(
-      a => a.user.toString() === req.user.userId
-    );
-
-    if (attendeeIndex > -1) {
-      meeting.attendees[attendeeIndex].leftAt = new Date();
-    }
-
-    await meeting.save();
-
-    await AuditLog.create({
-      user: req.user.userId,
-      action: 'meeting_leave',
-      resourceType: 'meeting',
-      resourceId: id,
-      success: true,
-      ipAddress: req.ip
-    });
-
-    res.json({
-      success: true,
-      message: 'Left meeting'
-    });
-  } catch (error) {
-    logger.error(`Leave meeting error: ${error.message}`);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to leave meeting'
-    });
-  }
-};
-
-// Export meeting to PDF
-exports.exportToPDF = async (req, res) => {
-  try {
-    const { id } = req.params;
-
-    const meeting = await Meeting.findById(id)
-      .populate('host', 'firstName lastName')
+    const meeting = await Meeting.findById(meetingId)
       .populate('attendees.user', 'firstName lastName');
 
-    if (!meeting) {
-      return res.status(404).json({
-        success: false,
-        message: 'Meeting not found'
-      });
+    if (!meeting) throw new Error('Meeting not found');
+
+    await updateStep(meetingId, 'upload', 'done', 'Audio received', io);
+    await updateStep(meetingId, 'transcription', 'running', 'Starting transcription', io);
+
+    let transcriptSegments = null;
+    let transcript = '';
+    let usedPerDevice = false;
+
+    // ── PATH 1: Per-device audio (preferred) ─────────────────────────────────
+    // Each person's audio is transcribed separately — speaker attribution is perfect
+    if (perDeviceAudio && perDeviceAudio.length > 0) {
+      logger.info('Using per-device audio pipeline — no diarization needed');
+      try {
+        transcriptSegments = await processPerDeviceAudio(perDeviceAudio, meetingId);
+        if (transcriptSegments && transcriptSegments.length > 0) {
+          transcript = transcriptSegments.map(s => `${s.speaker}: ${s.text}`).join('\n');
+          usedPerDevice = true;
+          meeting.speakerDiarizationMethod = 'per-device';
+          logger.info(`Per-device transcription success: ${transcriptSegments.length} segments`);
+        } else {
+          logger.warn('Per-device pipeline returned no segments — falling back to mixed audio');
+        }
+      } catch (e) {
+        logger.warn(`Per-device pipeline failed: ${e.message} — falling back to mixed audio`);
+      }
     }
 
-    const hasAccess =
-      meeting.host._id.toString() === req.user.userId ||
-      meeting.attendees.some(a => a.user._id.toString() === req.user.userId) ||
-      req.user.isAdmin;
+    // ── PATH 2: Mixed audio fallback ─────────────────────────────────────────
+    // Used when per-device audio is unavailable or failed
+    // Falls back to Groq transcription + pyannote/LLM diarization
+    if (!usedPerDevice && audioKey) {
+      logger.info('Using mixed audio pipeline with diarization');
 
-    if (!hasAccess) {
-      return res.status(403).json({
-        success: false,
-        message: 'Access denied'
-      });
+      const localAudioPath = await downloadAudio(audioKey);
+      const rawDuration = await getAudioDuration(localAudioPath);
+      meeting.actualDuration = (rawDuration && !isNaN(rawDuration)) ? Math.round(rawDuration / 60) : 0;
+
+      logger.info(`Audio duration: ${rawDuration}s`);
+
+      let groqResult = null;
+      const fileSizeMB = fs.statSync(localAudioPath).size / (1024 * 1024);
+
+      if (fileSizeMB > 24 || rawDuration > 600) {
+        logger.info('Large file — splitting into chunks');
+        const chunks = await splitAudio(localAudioPath);
+        let timeOffset = 0;
+        const allSegments = [];
+
+        for (const chunk of chunks) {
+          const chunkResult = await transcribeWithGroq(chunk);
+          transcript += (chunkResult?.text || '') + '\n';
+          if (chunkResult?.segments) {
+            chunkResult.segments.forEach(seg => {
+              allSegments.push({
+                ...seg,
+                start: (seg.start || 0) + timeOffset,
+                end: (seg.end || 0) + timeOffset
+              });
+            });
+          }
+          timeOffset += 600;
+          try { fs.unlinkSync(chunk); } catch (e) {}
+        }
+        groqResult = { text: transcript, segments: allSegments };
+      } else {
+        groqResult = await transcribeWithGroq(localAudioPath);
+        transcript = groqResult?.text || '';
+      }
+
+      meeting.transcriptRaw = transcript;
+      logger.info(`Transcription done. Text: ${transcript.length} chars, segments: ${groqResult?.segments?.length || 0}`);
+      await updateStep(meetingId, 'transcription', 'done', 'Transcription complete', io);
+
+      // Diarization step for mixed audio
+      await updateStep(meetingId, 'diarization', 'running', 'Identifying speakers', io);
+
+      const joinedAttendees = meeting.attendees.filter(
+        a => a.attended === true || a.joinedAt !== null
+      );
+      const activeAttendees = joinedAttendees.length > 0 ? joinedAttendees : meeting.attendees;
+      const attendeeNames = activeAttendees
+        .map(a => {
+          const first = (a.user?.firstName || '').trim();
+          const last = (a.user?.lastName || '').trim();
+          return `${first} ${last}`.trim();
+        })
+        .filter(name => name.length > 0);
+
+      logger.info(`Attendees for diarization: ${attendeeNames.join(', ')}`);
+
+      const rawSegments = (groqResult?.segments || []).map(seg => ({
+        text: seg.text?.trim() || '',
+        startTime: seg.start || 0,
+        endTime: seg.end || 0,
+        start: seg.start || 0,
+        end: seg.end || 0
+      })).filter(seg => seg.text.length > 0);
+
+      const numSpeakers = attendeeNames.length;
+      const diarSegments = await diarizeWithPyannote(localAudioPath, numSpeakers);
+
+      let labeledSegments;
+      if (diarSegments && diarSegments.length > 0) {
+        logger.info(`Using pyannote diarization (${diarSegments.length} segments)`);
+        labeledSegments = mergeTranscriptWithDiarization(rawSegments, diarSegments, attendeeNames);
+        meeting.speakerDiarizationMethod = 'pyannote';
+      } else {
+        logger.info('Pyannote unavailable — using LLM speaker inference fallback');
+        const segmentsToLabel = rawDuration < 600 ? rawSegments : mergeShortSegments(rawSegments);
+        labeledSegments = await inferSpeakersWithLLM(segmentsToLabel, attendeeNames);
+        meeting.speakerDiarizationMethod = 'llm';
+      }
+
+      const rawMappedSegments = labeledSegments.map(seg => ({
+        speaker: seg.speaker || 'Unknown Speaker',
+        startTime: seg.startTime || seg.start || 0,
+        endTime: seg.endTime || seg.end || 0,
+        text: seg.text || ''
+      }));
+
+      // Dedup
+      const dedupedSegments = [];
+      for (const seg of rawMappedSegments) {
+        const isDuplicate = dedupedSegments.some(existing => {
+          const a = existing.text.trim().toLowerCase();
+          const b = seg.text.trim().toLowerCase();
+          const timeDiff = Math.abs(seg.startTime - existing.startTime);
+          const longer = Math.max(a.length, b.length);
+          const shorter = Math.min(a.length, b.length);
+          return timeDiff < 15 && longer > 0 && shorter / longer > 0.8;
+        });
+        if (!isDuplicate) dedupedSegments.push(seg);
+      }
+
+      transcriptSegments = dedupedSegments;
+      try { fs.unlinkSync(localAudioPath); } catch (e) {}
     }
 
-    res.json({
-      success: true,
-      message: 'PDF generation endpoint',
-      data: { meeting, generatedAt: new Date() }
+    // Set final segments
+    meeting.transcriptRaw = transcript || transcriptSegments?.map(s => `${s.speaker}: ${s.text}`).join('\n') || '';
+    meeting.transcriptSegments = transcriptSegments || [];
+    meeting.speakerDiarizationEditable = true;
+
+    if (usedPerDevice) {
+      // Skip diarization step for per-device — already done
+      await updateStep(meetingId, 'transcription', 'done', `Transcribed ${perDeviceAudio.length} participants`, io);
+      await updateStep(meetingId, 'diarization', 'done', 'Speaker attribution via per-device audio — 100% accurate', io);
+    } else {
+      await updateStep(meetingId, 'diarization', 'done', 'Speaker identification complete', io);
+    }
+
+    logger.info(`Final segments: ${meeting.transcriptSegments.length}, method: ${meeting.speakerDiarizationMethod}`);
+
+    // Step 4: Analysis
+    await updateStep(meetingId, 'analysis', 'running', 'Analyzing meeting content', io);
+
+    const promptTemplate = await PromptTemplate.findOne({ domain: meeting.domain, isActive: true });
+
+    const analysis = await meetingAnalysisChain(
+      meeting.transcriptRaw,
+      meeting.domain,
+      meeting.attendees.map(a => a.user),
+      promptTemplate || {
+        systemPrompt: 'You are a meeting analyst. Analyze the meeting transcript and return structured insights.',
+        userPromptTemplate: 'Analyze this {domain} meeting transcript:\n\n{transcript}\n\nAttendees: {attendees}\n\nReturn JSON with: summary, conclusions, decisions, actionItems (array with owner/task/deadline fields), followUpTopics, attendeeContributions (array with name/score/keyPoints fields)'
+      },
+      meeting.transcriptSegments
+    );
+
+    meeting.summary = analysis.summary;
+    meeting.conclusions = analysis.conclusions || [];
+    meeting.decisions = analysis.decisions || [];
+    meeting.actionItems = (analysis.actionItems || []).map(item => {
+      let deadline = null;
+      if (item.deadline) {
+        const parsed = new Date(item.deadline);
+        deadline = isNaN(parsed.getTime()) ? null : parsed;
+      }
+      return {
+        owner: meeting.attendees.find(a => {
+          const name = `${a.user?.firstName} ${a.user?.lastName}`.toLowerCase();
+          return name.includes((item.owner || '').toLowerCase());
+        })?.user?._id || meeting.host,
+        task: item.task,
+        deadline,
+        status: 'pending'
+      };
     });
-  } catch (error) {
-    logger.error(`Export PDF error: ${error.message}`);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to export PDF'
-    });
-  }
-};
+    meeting.followUpTopics = analysis.followUpTopics || [];
 
-// Cancel meeting
-exports.cancelMeeting = async (req, res) => {
-  try {
-    const { id } = req.params;
-    const meeting = await Meeting.findById(id);
+    meeting.attendeeContributions = [];
 
-    if (!meeting) {
-      return res.status(404).json({ success: false, message: 'Meeting not found' });
+    for (const attendee of meeting.attendees) {
+      const name = `${attendee.user?.firstName} ${attendee.user?.lastName}`.trim();
+      try {
+        const contribution = await scoreAttendeeChain(
+          name,
+          meeting.transcriptRaw,
+          meeting.domain,
+          meeting.transcriptSegments
+        );
+        const score = (contribution.score && !isNaN(contribution.score)) ? contribution.score : 5;
+        attendee.contributionScore = score;
+        attendee.keyPoints = contribution.keyPoints || [];
+
+        meeting.attendeeContributions.push({
+          user: attendee.user._id,
+          name,
+          score,
+          keyPoints: contribution.keyPoints || [],
+          speakingTime: 0
+        });
+      } catch (e) {
+        logger.warn(`Score failed for ${name}: ${e.message}`);
+        meeting.attendeeContributions.push({
+          user: attendee.user._id,
+          name,
+          score: 5,
+          keyPoints: [],
+          speakingTime: 0
+        });
+      }
     }
 
-    const hostId = meeting.host?._id?.toString() || meeting.host?.toString();
-    if (hostId !== req.user.userId && !req.user.isAdmin) {
-      return res.status(403).json({ success: false, message: 'Only the meeting host can cancel this meeting' });
-    }
+    await updateStep(meetingId, 'analysis', 'done', 'Analysis complete', io);
 
-    if (!['scheduled', 'live'].includes(meeting.status)) {
-      return res.status(400).json({ success: false, message: `Cannot cancel a meeting with status: ${meeting.status}` });
-    }
-
-    meeting.status = 'cancelled';
-    await meeting.save();
-
+    // Step 5: Embeddings
+    await updateStep(meetingId, 'embedding', 'running', 'Storing embeddings', io);
     try {
-      const notifications = meeting.attendees
-        .filter(a => a.user?.toString() !== req.user.userId)
-        .map(a => ({
-          user: a.user,
-          type: 'meeting_cancelled',
-          title: `Meeting cancelled: ${meeting.name}`,
-          message: `"${meeting.name}" has been cancelled by the host.`,
-          link: `/meetings/history`,
-          entityType: 'meeting',
-          entityId: meeting._id
-        }));
-      if (notifications.length > 0) await Notification.insertMany(notifications);
-    } catch (notifErr) {
-      logger.warn(`Cancel meeting notification failed: ${notifErr.message}`);
+      const speakerChunks = [];
+      let currentChunk = '';
+      let currentWordCount = 0;
+      const CHUNK_WORD_LIMIT = 300;
+
+      for (const seg of meeting.transcriptSegments) {
+        const line = `${seg.speaker}: ${seg.text}`;
+        const wordCount = line.split(' ').length;
+        if (currentWordCount + wordCount > CHUNK_WORD_LIMIT && currentChunk.length > 0) {
+          speakerChunks.push(currentChunk.trim());
+          currentChunk = '';
+          currentWordCount = 0;
+        }
+        currentChunk += line + '\n';
+        currentWordCount += wordCount;
+      }
+      if (currentChunk.trim().length > 0) speakerChunks.push(currentChunk.trim());
+
+      const chunks = speakerChunks.length > 0 ? speakerChunks : chunkTranscript(meeting.transcriptRaw, 300);
+      const attendeeNames = meeting.attendees.map(a =>
+        `${a.user?.firstName || ''} ${a.user?.lastName || ''}`.trim()
+      ).filter(Boolean);
+
+      const collection = await chromaClient.getCollection({ name: 'meeting_transcripts' });
+      for (let i = 0; i < chunks.length; i++) {
+        const embedding = await generateEmbedding(chunks[i]);
+        await collection.add({
+          ids: [`${meetingId}_chunk_${i}`],
+          embeddings: [embedding],
+          documents: [chunks[i]],
+          metadatas: [{
+            meetingId: meetingId.toString(),
+            domain: meeting.domain,
+            date: meeting.scheduledDate.toISOString(),
+            attendees: attendeeNames.join(', '),
+            chunkIndex: i
+          }]
+        });
+      }
+    } catch (e) {
+      logger.warn(`Embedding failed: ${e.message}`);
+    }
+    await updateStep(meetingId, 'embedding', 'done', 'Embeddings stored', io);
+
+    for (const attendee of meeting.attendees) {
+      try {
+        const performance = await Performance.findOne({ user: attendee.user._id });
+        if (performance) {
+          performance.meetingStats = performance.meetingStats || { totalMeetings: 0, avgContributionScore: 0 };
+          performance.meetingStats.totalMeetings += 1;
+          const prevAvg = performance.meetingStats.avgContributionScore || 0;
+          const prevCount = performance.meetingStats.totalMeetings - 1;
+          const newScore = attendee.contributionScore || 5;
+          const newAvg = (prevAvg * prevCount + newScore) / performance.meetingStats.totalMeetings;
+          performance.meetingStats.avgContributionScore = isNaN(newAvg) ? 5 : newAvg;
+          await performance.save();
+        }
+      } catch (e) {
+        logger.warn(`Performance update failed: ${e.message}`);
+      }
     }
 
-    await AuditLog.create({
-      user: req.user.userId,
-      action: 'meeting_cancel',
-      resourceType: 'meeting',
-      resourceId: id,
-      success: true,
-      ipAddress: req.ip
+    await Meeting.findByIdAndUpdate(meetingId, {
+      status: 'ready',
+      transcriptRaw: meeting.transcriptRaw,
+      transcriptSegments: meeting.transcriptSegments,
+      speakerDiarizationMethod: meeting.speakerDiarizationMethod,
+      speakerDiarizationEditable: meeting.speakerDiarizationEditable,
+      actualDuration: meeting.actualDuration,
+      summary: meeting.summary,
+      conclusions: (meeting.conclusions || []).filter(Boolean),
+      decisions: (meeting.decisions || []).filter(Boolean),
+      followUpTopics: (meeting.followUpTopics || []).filter(Boolean),
+      actionItems: (meeting.actionItems || []).filter(item => item && item.task),
+      attendeeContributions: (meeting.attendeeContributions || []).filter(Boolean),
+      attendees: meeting.attendees,
+    }, { new: true });
+
+    await updateStep(meetingId, 'ready', 'done', 'Meeting processing complete', io);
+
+    await Notification.create({
+      user: meeting.host,
+      type: 'meeting_ready',
+      title: 'Meeting analysis ready',
+      message: `"${meeting.name}" has been processed and is ready for review`,
+      link: `/meetings/${meeting._id}`,
+      entityType: 'meeting',
+      entityId: meeting._id
     });
 
-    const io = req.app.get('io');
-    if (io) {
-      io.to(id).emit('meeting-cancelled', {
-        meetingId: id,
-        message: 'This meeting has been cancelled by the host'
-      });
-    }
+    logger.info(`Meeting ${meetingId} processing complete — method: ${meeting.speakerDiarizationMethod}`);
 
-    res.json({ success: true, message: 'Meeting cancelled', meeting });
   } catch (error) {
-    logger.error(`Cancel meeting error: ${error.message}`);
-    res.status(500).json({ success: false, message: 'Failed to cancel meeting' });
+    logger.error(`Processing error for meeting ${meetingId}: ${error.message}`);
+    try {
+      await Meeting.findByIdAndUpdate(meetingId, {
+        status: 'completed',
+        processingError: error.message,
+        $set: { 'processingSteps.$[elem].status': 'failed' }
+      }, { arrayFilters: [{ 'elem.status': 'running' }] });
+    } catch (updateError) {
+      logger.error(`Failed to update meeting status: ${updateError.message}`);
+    }
+    throw error;
   }
-};
+}
 
-// Save manual speaker corrections on transcript segments
-exports.updateTranscriptSegments = async (req, res) => {
+const worker = new Worker('meeting-processing', processMeeting, {
+  connection: { url: process.env.REDIS_URL },
+  concurrency: 2
+});
+
+worker.on('completed', (job) => logger.info(`Job ${job.id} completed`));
+worker.on('failed', (job, err) => logger.error(`Job ${job.id} failed: ${err.message}`));
+
+// Keep HuggingFace Space warm — ping every 10 minutes
+const KEEP_ALIVE_INTERVAL = 10 * 60 * 1000;
+
+async function pingDiarizationService() {
   try {
-    const { id } = req.params;
-    const { transcriptSegments } = req.body;
-
-    if (!transcriptSegments || !Array.isArray(transcriptSegments)) {
-      return res.status(400).json({ success: false, message: 'transcriptSegments must be an array' });
+    const res = await fetch(`${DIARIZATION_URL}/health`, { timeout: 8000 });
+    const data = await res.json();
+    if (data.pipeline_loaded) {
+      logger.info('Diarization keep-alive: pipeline loaded');
+    } else {
+      logger.warn('Diarization keep-alive: pipeline not loaded yet');
     }
-
-    const meeting = await Meeting.findById(id);
-
-    if (!meeting) {
-      return res.status(404).json({ success: false, message: 'Meeting not found' });
-    }
-
-    const hostId = meeting.host?.toString();
-    const isAttendee = meeting.attendees?.some(a => a.user?.toString() === req.user.userId);
-    const hasAccess = hostId === req.user.userId || isAttendee || req.user.isAdmin;
-
-    if (!hasAccess) {
-      return res.status(403).json({ success: false, message: 'Access denied' });
-    }
-
-    meeting.transcriptSegments = transcriptSegments;
-    await meeting.save();
-
-    await AuditLog.create({
-      user: req.user.userId,
-      action: 'transcript_correction',
-      resourceType: 'meeting',
-      resourceId: id,
-      newValue: { segmentsUpdated: transcriptSegments.length },
-      success: true,
-      ipAddress: req.ip
-    });
-
-    res.json({ success: true, message: 'Transcript segments updated', meeting });
-  } catch (error) {
-    logger.error(`Update transcript segments error: ${error.message}`);
-    res.status(500).json({ success: false, message: 'Failed to update transcript segments' });
+  } catch (e) {
+    logger.warn(`Diarization keep-alive failed: ${e.message}`);
   }
-};
+}
+
+pingDiarizationService();
+const keepAliveTimer = setInterval(pingDiarizationService, KEEP_ALIVE_INTERVAL);
+
+const workerHealthTimer = setInterval(() => {
+  logger.info(`Worker alive, uptime: ${Math.round(process.uptime())}s`);
+}, 5 * 60 * 1000);
+
+process.on('SIGTERM', () => {
+  clearInterval(keepAliveTimer);
+  clearInterval(workerHealthTimer);
+  logger.info('Worker shutting down gracefully');
+  process.exit(0);
+});
+
+module.exports = worker;

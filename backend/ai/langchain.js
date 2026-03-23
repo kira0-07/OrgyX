@@ -149,13 +149,10 @@ Be concise and professional.`],
 
     const chain = prompt.pipe(llm).pipe(new StringOutputParser());
 
-    // ✅ FIX: Removed .replace(/\{/g, '{{') and .replace(/\}/g, '}}') from transcript content
-    // Those replacements corrupted any JSON, code snippets, or curly-brace text in transcripts
-    // LangChain handles variable substitution safely via invoke() — the transcript value
-    // is passed as a named variable and does NOT need manual escaping
     return await chain.invoke({
-      transcript: transcript.substring(0, 10000)
-    });
+      transcript: transcript
+        .substring(0, 10000)
+        .replace(/\{/g, '{{')        .replace(/\}/g, '}}')    });
   } catch (error) {
     logger.error(`Error in transcript summarization: ${error.message}`);
     return 'Unable to generate summary.';
