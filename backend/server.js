@@ -98,7 +98,7 @@ app.use(morgan('combined', { stream: { write: message => logger.info(message.tri
 
 const generalLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: 1000,
+  max: 100,
   message: { success: false, message: 'Too many requests, please try again later.' }
 });
 app.use('/api/', generalLimiter);
@@ -347,6 +347,18 @@ io.on('connection', (socket) => {
     if (room) {
       room.recording = false;
       io.to(meetingId).emit('recording-stopped');
+    }
+  });
+
+  // Relay peer-restart to the target user so both sides destroy and recreate cleanly
+  socket.on('peer-restart', ({ meetingId, targetUserId }) => {
+    const room = rooms.get(meetingId);
+    if (room) {
+      const targetUser = room.users.find(u => u.userId?.toString() === targetUserId?.toString());
+      if (targetUser) {
+        io.to(targetUser.socketId).emit('peer-restart', { userId: socket.userId });
+        logger.info(`Peer restart relayed from ${socket.userId} to ${targetUserId}`);
+      }
     }
   });
 

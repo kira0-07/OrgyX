@@ -274,6 +274,15 @@ export default function MeetingRoom({ meetingId, user }) {
           if (peersRef.current[userId]) peersRef.current[userId].signal(candidate);
         });
 
+        // peer-restart: other side had a connection failure and wants a clean retry
+        // We destroy our peer so they can reinitiate without SDP state errors
+        socketRef.current.on('peer-restart', ({ userId: restartUserId }) => {
+          if (!mounted) return;
+          console.log(`Peer restart requested by ${restartUserId} — destroying local peer`);
+          destroyPeer(restartUserId);
+          // Don't recreate here — the other side will initiate after destroying theirs
+        });
+
         // Chat: userName now comes from server JWT — no fallback needed
         socketRef.current.on('chat-message', ({ userId, message, timestamp, userName }) => {
           if (!mounted) return;
@@ -387,17 +396,18 @@ export default function MeetingRoom({ meetingId, user }) {
         iceServers: [
           { urls: 'stun:stun.l.google.com:19302' },
           { urls: 'stun:stun1.l.google.com:19302' },
-          { urls: 'stun:stun2.l.google.com:19302' },
+          // Primary: Our own dedicated Railway TURN server — no rate limits
           {
-            urls: 'turn:openrelay.metered.ca:80',
-            username: 'openrelayproject',
-            credential: 'openrelayproject'
+            urls: 'turn:autorack.proxy.rlwy.net:26677',
+            username: 'catalyst',
+            credential: 'catalyst123'
           },
           {
-            urls: 'turn:openrelay.metered.ca:443',
-            username: 'openrelayproject',
-            credential: 'openrelayproject'
+            urls: 'turn:autorack.proxy.rlwy.net:26677?transport=tcp',
+            username: 'catalyst',
+            credential: 'catalyst123'
           },
+          // Fallback: public TURN if Railway TURN unreachable
           {
             urls: 'turn:openrelay.metered.ca:443?transport=tcp',
             username: 'openrelayproject',
@@ -425,13 +435,14 @@ export default function MeetingRoom({ meetingId, user }) {
     peer.on('close', () => destroyPeer(userId));
     peer.on('error', (err) => {
       console.warn(`Peer error with ${userId}:`, err.message);
-      // Auto-retry once on connection failure after 3 seconds
+      // On connection failure, notify other side to destroy their peer too
+      // then recreate cleanly — prevents "wrong state: stable" SDP error on retry
       if (err.message.includes('Connection failed') && localStreamRef.current) {
         setTimeout(() => {
-          if (!peersRef.current[userId] || peersRef.current[userId].destroyed) {
-            console.log(`Retrying connection with ${userId}`);
-            createPeer(userId, true, localStreamRef.current);
-          }
+          console.log(`Retrying connection with ${userId} — sending peer-restart`);
+          socketRef.current?.emit('peer-restart', { meetingId, targetUserId: userId });
+          destroyPeer(userId);
+          createPeer(userId, true, localStreamRef.current);
         }, 3000);
       }
       setRemoteStreams(prev => { const n = { ...prev }; delete n[userId]; return n; });
@@ -888,7 +899,7 @@ export default function MeetingRoom({ meetingId, user }) {
                   isPinned={pinnedUserId === uid}
                   onPin={() => setPinnedUserId(p => p === uid ? null : uid)}
                   onFullscreen={() => handleFullscreen(uid)}
-                  spanFull={false}
+                  spanFull={totalParticipants === 3 && idx === 0}
                 />
               ))}
             </div>
