@@ -1036,3 +1036,110 @@ exports.exportToPDF = async (req, res) => {
     });
   }
 };
+
+// Cancel meeting — only host can cancel
+exports.cancelMeeting = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const meeting = await Meeting.findById(id);
+
+    if (!meeting) {
+      return res.status(404).json({ success: false, message: 'Meeting not found' });
+    }
+
+    const hostId = meeting.host?._id?.toString() || meeting.host?.toString();
+    if (hostId !== req.user.userId && !req.user.isAdmin) {
+      return res.status(403).json({ success: false, message: 'Only the meeting host can cancel this meeting' });
+    }
+
+    if (!['scheduled', 'live'].includes(meeting.status)) {
+      return res.status(400).json({ success: false, message: `Cannot cancel a meeting with status: ${meeting.status}` });
+    }
+
+    meeting.status = 'cancelled';
+    await meeting.save();
+
+    try {
+      const notifications = meeting.attendees
+        .filter(a => a.user?.toString() !== req.user.userId)
+        .map(a => ({
+          user: a.user,
+          type: 'meeting_cancelled',
+          title: `Meeting cancelled: ${meeting.name}`,
+          message: `"${meeting.name}" has been cancelled by the host.`,
+          link: `/meetings/history`,
+          entityType: 'meeting',
+          entityId: meeting._id
+        }));
+      if (notifications.length > 0) await Notification.insertMany(notifications);
+    } catch (notifErr) {
+      logger.warn(`Cancel meeting notification failed: ${notifErr.message}`);
+    }
+
+    await AuditLog.create({
+      user: req.user.userId,
+      action: 'meeting_cancel',
+      resourceType: 'meeting',
+      resourceId: id,
+      success: true,
+      ipAddress: req.ip
+    });
+
+    const io = req.app.get('io');
+    if (io) {
+      io.to(id).emit('meeting-cancelled', {
+        meetingId: id,
+        message: 'This meeting has been cancelled by the host'
+      });
+    }
+
+    res.json({ success: true, message: 'Meeting cancelled', meeting });
+  } catch (error) {
+    logger.error(`Cancel meeting error: ${error.message}`);
+    res.status(500).json({ success: false, message: 'Failed to cancel meeting' });
+  }
+};
+
+// Save manual speaker corrections on transcript segments
+exports.updateTranscriptSegments = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { transcriptSegments } = req.body;
+
+    if (!transcriptSegments || !Array.isArray(transcriptSegments)) {
+      return res.status(400).json({ success: false, message: 'transcriptSegments must be an array' });
+    }
+
+    const meeting = await Meeting.findById(id);
+
+    if (!meeting) {
+      return res.status(404).json({ success: false, message: 'Meeting not found' });
+    }
+
+    const hostId = meeting.host?.toString();
+    const isAttendee = meeting.attendees?.some(a => a.user?.toString() === req.user.userId);
+    const hasAccess = hostId === req.user.userId || isAttendee || req.user.isAdmin;
+
+    if (!hasAccess) {
+      return res.status(403).json({ success: false, message: 'Access denied' });
+    }
+
+    meeting.transcriptSegments = transcriptSegments;
+    await meeting.save();
+
+    await AuditLog.create({
+      user: req.user.userId,
+      action: 'transcript_correction',
+      resourceType: 'meeting',
+      resourceId: id,
+      newValue: { segmentsUpdated: transcriptSegments.length },
+      success: true,
+      ipAddress: req.ip
+    });
+
+    res.json({ success: true, message: 'Transcript segments updated', meeting });
+  } catch (error) {
+    logger.error(`Update transcript segments error: ${error.message}`);
+    res.status(500).json({ success: false, message: 'Failed to update transcript segments' });
+  }
+};
