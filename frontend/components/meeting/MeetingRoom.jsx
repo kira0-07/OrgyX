@@ -888,7 +888,7 @@ export default function MeetingRoom({ meetingId, user }) {
                   isPinned={pinnedUserId === uid}
                   onPin={() => setPinnedUserId(p => p === uid ? null : uid)}
                   onFullscreen={() => handleFullscreen(uid)}
-                  spanFull={totalParticipants === 3 && idx === 0}
+                  spanFull={false}
                 />
               ))}
             </div>
