@@ -215,8 +215,8 @@ exports.getMeeting = async (req, res) => {
     // Check if user has access
     // Check access
     const hasAccess =
-      meeting.host?.toString() === req.user.userId ||
-      meeting.attendees?.some(a => a.user?.toString() === req.user.userId) ||
+      meeting.host?._id?.toString() === req.user.userId ||
+      meeting.attendees?.some(a => a.user?._id?.toString() === req.user.userId) ||
       req.user.isAdmin;
 
     if (!hasAccess) {
