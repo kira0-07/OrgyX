@@ -30,10 +30,11 @@ export default function MeetingDetailPage({ params }) {
   const [meeting, setMeeting] = useState(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isEnding, setIsEnding] = useState(false);
+  const [showEndConfirm, setShowEndConfirm] = useState(false); // FIX: modal instead of confirm()
   const [processingStatus, setProcessingStatus] = useState(null);
   const [activeTab, setActiveTab] = useState('summary');
 
-  // ── Transcript speaker correction state ──
+  // Transcript speaker correction state
   const [transcriptSegments, setTranscriptSegments] = useState([]);
   const [editingSegmentIdx, setEditingSegmentIdx] = useState(null);
   const [transcriptHasChanges, setTranscriptHasChanges] = useState(false);
@@ -56,21 +57,21 @@ export default function MeetingDetailPage({ params }) {
   }, [meeting?.status]);
 
   const fetchMeeting = async () => {
-  if (!params?.id) return;
-  try {
-    const response = await api.get(`/meetings/${params.id}`);
-    setMeeting(response.data.meeting);
-    setTranscriptSegments(response.data.meeting?.transcriptSegments || []);
-    if (response.data.meeting?.status === 'processing') {
-      fetchProcessingStatus();
+    if (!params?.id) return;
+    try {
+      const response = await api.get(`/meetings/${params.id}`);
+      setMeeting(response.data.meeting);
+      setTranscriptSegments(response.data.meeting?.transcriptSegments || []);
+      if (response.data.meeting?.status === 'processing') {
+        fetchProcessingStatus();
+      }
+    } catch (error) {
+      console.error('Failed to fetch meeting:', error);
+      toast.error('Failed to fetch meeting details');
+    } finally {
+      setIsLoading(false);
     }
-  } catch (error) {
-    console.error('Failed to fetch meeting:', error);
-    toast.error('Failed to fetch meeting details');
-  } finally {
-    setIsLoading(false);
-  }
-};
+  };
 
   const fetchProcessingStatus = async () => {
     try {
@@ -84,8 +85,9 @@ export default function MeetingDetailPage({ params }) {
     }
   };
 
+  // FIX: no confirm() — uses modal state instead
   const handleEndMeeting = async () => {
-    if (!confirm('Are you sure you want to end this meeting?')) return;
+    setShowEndConfirm(false);
     setIsEnding(true);
     try {
       await api.post(`/meetings/${params.id}/end`);
@@ -98,7 +100,7 @@ export default function MeetingDetailPage({ params }) {
     }
   };
 
-  // ── Transcript speaker correction handlers ──
+  // Transcript speaker correction handlers
   const uniqueSpeakers = [...new Set(transcriptSegments.map(s => s.speaker).filter(Boolean))];
   const speakerColorMap = Object.fromEntries(
     uniqueSpeakers.map((name, i) => [name, SPEAKER_COLORS[i % SPEAKER_COLORS.length]])
@@ -129,13 +131,10 @@ export default function MeetingDetailPage({ params }) {
     }
   };
 
-  // ── FIX: helper to resolve attendee contribution name from populated user object ──
+  // Helper to resolve attendee contribution name
   const getContributionName = (c) => {
-    // 1. populated user object
     if (c.user?.firstName) return `${c.user.firstName} ${c.user.lastName || ''}`.trim();
-    // 2. stored name field
     if (c.name) return c.name;
-    // 3. match against attendees array by user ID (works for ALL old meetings)
     const cId = c.user?._id?.toString() || c.user?.id?.toString() || c.user?.toString() || '';
     const matched = (meeting?.attendees || []).find(a => {
       const aId = a.user?._id?.toString() || a.user?.id?.toString() || '';
@@ -145,7 +144,14 @@ export default function MeetingDetailPage({ params }) {
     return 'Unknown';
   };
 
-  // ── Helper: build shared content sections ──
+  // FIX: format timestamp correctly — Math.floor prevents 1:9.68 showing
+  const formatTime = (seconds) => {
+    const s = seconds || 0;
+    const mins = Math.floor(s / 60);
+    const secs = Math.floor(s % 60).toString().padStart(2, '0');
+    return `${mins}:${secs}`;
+  };
+
   const buildExportSections = () => {
     if (!meeting) return '';
     const meetingDate = meeting.scheduledDate ? format(new Date(meeting.scheduledDate), 'MMM d, yyyy') : '';
@@ -155,38 +161,23 @@ export default function MeetingDetailPage({ params }) {
       .filter(Boolean)
       .join(', ');
 
-    const conclusions = (meeting.conclusions || []).map((c, i) => `  ${i + 1}. ${c}`).join('\n');
-    const decisions = (meeting.decisions || []).map((d, i) => `  ${i + 1}. ${d}`).join('\n');
-    const followUps = (meeting.followUpTopics || []).map((f, i) => `  ${i + 1}. ${f}`).join('\n');
-    const actions = (meeting.actionItems || []).map((item, i) => {
-      const owner = item.owner ? `${item.owner.firstName || ''} ${item.owner.lastName || ''}`.trim() : 'Unassigned';
-      const deadline = item.deadline ? format(new Date(item.deadline), 'MMM d, yyyy') : 'No deadline';
-      return `  ${i + 1}. ${item.task}\n     Owner: ${owner} | Deadline: ${deadline} | Status: ${item.status || 'pending'}`;
-    }).join('\n');
-
     const transcript = transcriptSegments.length > 0
-      ? transcriptSegments.map(seg => {
-        const mins = Math.floor((seg.startTime || 0) / 60);
-        const secs = ((seg.startTime || 0) % 60).toString().padStart(2, '0');
-        return `  [${mins}:${secs}] ${seg.speaker}: ${seg.text}`;
-      }).join('\n')
+      ? transcriptSegments.map(seg => `  [${formatTime(seg.startTime)}] ${seg.speaker}: ${seg.text}`).join('\n')
       : (meeting.transcriptRaw || 'No transcript available');
 
-    // ✅ FIX: use getContributionName instead of c.name
     const contributions = (meeting.attendeeContributions || []).map(c => {
       const score = c.contributionScore ?? c.score ?? 0;
       const kp = Array.isArray(c.keyPoints) ? c.keyPoints.join('; ') : (c.keyPoints || '—');
       return `  ${getContributionName(c)}: Score ${score}/10 | Key Points: ${kp}`;
     }).join('\n');
 
-    return { meetingDate, duration, attendeeNames, conclusions, decisions, followUps, actions, transcript, contributions };
+    return { meetingDate, duration, attendeeNames, transcript, contributions };
   };
 
-  // ── PDF EXPORT ──
+  // PDF EXPORT
   const handleExportPDF = async () => {
     if (!meeting) return;
     const loadingToast = toast.loading('Generating PDF...');
-
     try {
       await new Promise((resolve, reject) => {
         if (window.jspdf) return resolve();
@@ -199,7 +190,6 @@ export default function MeetingDetailPage({ params }) {
 
       const { jsPDF } = window.jspdf;
       const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
-
       const s = buildExportSections();
       const pageW = 210;
       const margin = 18;
@@ -279,23 +269,19 @@ export default function MeetingDetailPage({ params }) {
       labelValue('Attendees', s.attendeeNames);
       y += 4;
 
-      // SUMMARY
       sectionHeader('Summary');
       bodyText(meeting.summary || 'No summary available.');
 
-      // CONCLUSIONS
       if (meeting.conclusions?.length > 0) {
         sectionHeader('Key Conclusions');
         meeting.conclusions.forEach((c, i) => bodyText(`${i + 1}. ${c}`, 4));
       }
 
-      // DECISIONS
       if (meeting.decisions?.length > 0) {
         sectionHeader('Decisions');
         meeting.decisions.forEach((d, i) => bodyText(`${i + 1}. ${d}`, 4));
       }
 
-      // ACTION ITEMS
       sectionHeader('Action Items');
       if (meeting.actionItems?.length > 0) {
         meeting.actionItems.forEach((item, i) => {
@@ -319,19 +305,17 @@ export default function MeetingDetailPage({ params }) {
         bodyText('No action items recorded.');
       }
 
-      // FOLLOW-UP TOPICS
       if (meeting.followUpTopics?.length > 0) {
         sectionHeader('Follow-up Topics');
         meeting.followUpTopics.forEach((f, i) => bodyText(`${i + 1}. ${f}`, 4));
       }
 
-      // ATTENDEE CONTRIBUTIONS ✅ FIX: use getContributionName
       if (meeting.attendeeContributions?.length > 0) {
         sectionHeader('Attendee Contributions');
         meeting.attendeeContributions.forEach(c => {
           const score = c.contributionScore ?? c.score ?? 0;
           const kp = Array.isArray(c.keyPoints) ? c.keyPoints.join('; ') : (c.keyPoints || '—');
-          const name = getContributionName(c); // ✅ FIXED
+          const name = getContributionName(c);
           checkPage(12);
           const barColor = score >= 8 ? [46, 125, 50] : score >= 5 ? [230, 81, 0] : [183, 28, 28];
           doc.setFillColor(245, 245, 252);
@@ -339,7 +323,7 @@ export default function MeetingDetailPage({ params }) {
           doc.setFont('helvetica', 'bold');
           doc.setFontSize(9.5);
           doc.setTextColor(...DARK);
-          doc.text(name, margin + 4, y + 4.5); // ✅ FIXED
+          doc.text(name, margin + 4, y + 4.5);
           doc.setFillColor(...barColor);
           doc.roundedRect(margin + contentW - 22, y + 2, (score / 10) * 18, 7, 1, 1, 'F');
           doc.setTextColor(255, 255, 255);
@@ -354,12 +338,9 @@ export default function MeetingDetailPage({ params }) {
         });
       }
 
-      // TRANSCRIPT
       sectionHeader('Transcript');
       if (transcriptSegments.length > 0) {
         transcriptSegments.forEach(seg => {
-          const mins = Math.floor((seg.startTime || 0) / 60);
-          const secs = ((seg.startTime || 0) % 60).toString().padStart(2, '0');
           checkPage(12);
           doc.setFont('helvetica', 'bold');
           doc.setFontSize(8.5);
@@ -368,7 +349,7 @@ export default function MeetingDetailPage({ params }) {
           const spkW = doc.getTextWidth(`${seg.speaker}  `);
           doc.setFont('helvetica', 'normal');
           doc.setTextColor(...GREY);
-          doc.text(`[${mins}:${secs}]`, margin + spkW, y);
+          doc.text(`[${formatTime(seg.startTime)}]`, margin + spkW, y);
           y += 4.5;
           doc.setTextColor(...DARK);
           doc.setFontSize(9);
@@ -383,7 +364,6 @@ export default function MeetingDetailPage({ params }) {
         bodyText('No transcript available.');
       }
 
-      // FOOTER
       const totalPages = doc.internal.getNumberOfPages();
       for (let i = 1; i <= totalPages; i++) {
         doc.setPage(i);
@@ -407,11 +387,10 @@ export default function MeetingDetailPage({ params }) {
     }
   };
 
-  // ── DOCX EXPORT ──
+  // DOCX EXPORT
   const handleExportDOCX = async () => {
     if (!meeting) return;
     const loadingToast = toast.loading('Generating DOCX...');
-
     try {
       await new Promise((resolve, reject) => {
         if (window.docx && window.docx.Document) return resolve();
@@ -422,7 +401,7 @@ export default function MeetingDetailPage({ params }) {
         script.src = 'https://unpkg.com/docx@8.2.2/build/index.umd.js';
         script.onload = () => {
           if (window.docx && window.docx.Document) return resolve();
-          reject(new Error('docx library loaded but Document not found on window.docx'));
+          reject(new Error('docx library loaded but Document not found'));
         };
         script.onerror = () => {
           const s2 = document.createElement('script');
@@ -580,7 +559,6 @@ export default function MeetingDetailPage({ params }) {
         meeting.followUpTopics.forEach((f, i) => children.push(numberedItem(f, i + 1)));
       }
 
-      // ✅ FIX: use getContributionName in DOCX
       if (meeting.attendeeContributions?.length > 0) {
         children.push(sectionHeading('👥  Attendee Contributions'));
         children.push(new Paragraph({ spacing: { before: 100, after: 100 } }));
@@ -604,7 +582,7 @@ export default function MeetingDetailPage({ params }) {
               const kp = Array.isArray(c.keyPoints) ? c.keyPoints.join('; ') : (c.keyPoints || '—');
               const scoreColor = score >= 8 ? '2E7D32' : score >= 5 ? 'E65100' : 'B71C1C';
               const bg = i % 2 === 0 ? 'FFFFFF' : 'F5F4FF';
-              const name = getContributionName(c); // ✅ FIXED
+              const name = getContributionName(c);
               return new TableRow({
                 children: [
                   new TableCell({ borders, width: { size: 2800, type: WidthType.DXA }, shading: { fill: bg, type: ShadingType.CLEAR }, margins: { top: 80, bottom: 80, left: 120, right: 120 }, children: [new Paragraph({ children: [new TextRun({ text: name, size: 19, bold: true, font: 'Arial', color: DARK_COLOR })] })] }),
@@ -621,13 +599,11 @@ export default function MeetingDetailPage({ params }) {
       children.push(sectionHeading('🎙️  Transcript'));
       if (transcriptSegments.length > 0) {
         transcriptSegments.forEach(seg => {
-          const mins = Math.floor((seg.startTime || 0) / 60);
-          const secs = ((seg.startTime || 0) % 60).toString().padStart(2, '0');
           children.push(new Paragraph({
             spacing: { before: 80, after: 40 },
             children: [
               new TextRun({ text: `${seg.speaker}  `, bold: true, color: ACCENT_COLOR, size: 19, font: 'Arial' }),
-              new TextRun({ text: `[${mins}:${secs}]`, color: GREY_COLOR, size: 17, font: 'Arial' }),
+              new TextRun({ text: `[${formatTime(seg.startTime)}]`, color: GREY_COLOR, size: 17, font: 'Arial' }),
             ]
           }));
           children.push(new Paragraph({
@@ -760,6 +736,31 @@ export default function MeetingDetailPage({ params }) {
     <DashboardLayout>
       <div className="space-y-6">
 
+        {/* FIX: End Meeting confirmation modal — no confirm() dialog */}
+        {showEndConfirm && (
+          <div style={{
+            position: 'fixed', inset: 0, zIndex: 50,
+            background: 'rgba(0,0,0,0.6)',
+            display: 'flex', alignItems: 'center', justifyContent: 'center'
+          }}>
+            <div className="bg-slate-900 border border-slate-700 rounded-xl p-6 w-full max-w-sm mx-4">
+              <h2 className="text-lg font-semibold mb-2 text-white">End this meeting?</h2>
+              <p className="text-slate-400 text-sm mb-6">
+                This will end the meeting for all participants and cannot be undone.
+              </p>
+              <div className="flex gap-3 justify-end">
+                <Button variant="outline" onClick={() => setShowEndConfirm(false)} className="border-slate-700">
+                  Cancel
+                </Button>
+                <Button onClick={handleEndMeeting} disabled={isEnding} className="bg-red-600 hover:bg-red-700">
+                  {isEnding && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                  Yes, end meeting
+                </Button>
+              </div>
+            </div>
+          </div>
+        )}
+
         {meeting.status === 'cancelled' && (
           <div className="bg-red-900/20 border border-red-800/50 rounded-lg p-4 flex items-center gap-3">
             <AlertCircle className="h-5 w-5 text-red-400 shrink-0" />
@@ -806,8 +807,9 @@ export default function MeetingDetailPage({ params }) {
                 Rejoin Meeting
               </Button>
             )}
+            {/* FIX: End Meeting button now opens modal, works outside room too */}
             {(meeting.status === 'live' || meeting.status === 'scheduled') && isHost && (
-              <Button onClick={handleEndMeeting} disabled={isEnding} className="bg-red-600 hover:bg-red-700">
+              <Button onClick={() => setShowEndConfirm(true)} disabled={isEnding} className="bg-red-600 hover:bg-red-700">
                 {isEnding ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <StopCircle className="mr-2 h-4 w-4" />}
                 End Meeting
               </Button>
@@ -973,8 +975,9 @@ export default function MeetingDetailPage({ params }) {
                                       <Pencil className="h-3 w-3 opacity-0 group-hover:opacity-60 transition-opacity" />
                                     </button>
                                   )}
+                                  {/* FIX: Math.floor prevents 1:9.68 display */}
                                   <span className="text-xs text-slate-500">
-                                    {Math.floor((seg.startTime || 0) / 60)}:{((seg.startTime || 0) % 60).toString().padStart(2, '0')}
+                                    {formatTime(seg.startTime)}
                                   </span>
                                 </div>
                                 <p className="text-slate-300 text-sm">{seg.text}</p>
