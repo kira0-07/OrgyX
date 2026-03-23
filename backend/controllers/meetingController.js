@@ -44,7 +44,6 @@ exports.createMeeting = async (req, res) => {
 
     const host = req.user.userId;
 
-    // Validate attendees exist
     const attendeeUsers = await User.find({
       _id: { $in: attendees.map(a => a.user || a) },
       isActive: true
@@ -57,12 +56,10 @@ exports.createMeeting = async (req, res) => {
       });
     }
 
-    // Format attendees
     const formattedAttendees = attendeeUsers.map(user => ({
       user: user._id
     }));
 
-    // Include host as attendee if not already
     if (!formattedAttendees.find(a => a.user.toString() === host)) {
       formattedAttendees.push({ user: host });
     }
@@ -90,7 +87,6 @@ exports.createMeeting = async (req, res) => {
 
     await meeting.save();
 
-    // Create notifications for attendees
     const notifications = attendeeUsers
       .filter(u => u._id.toString() !== host)
       .map(user => ({
@@ -105,7 +101,6 @@ exports.createMeeting = async (req, res) => {
 
     await Notification.insertMany(notifications);
 
-    // Audit log
     await AuditLog.create({
       user: host,
       action: 'meeting_create',
@@ -145,7 +140,6 @@ exports.getMeetings = async (req, res) => {
 
     const query = {};
 
-    // User can see meetings they host or attend
     query.$or = [
       { host: req.user.userId },
       { 'attendees.user': req.user.userId }
@@ -212,8 +206,6 @@ exports.getMeeting = async (req, res) => {
       });
     }
 
-    // Check if user has access
-    // Check access
     const hasAccess =
       meeting.host?._id?.toString() === req.user.userId ||
       meeting.attendees?.some(a => a.user?._id?.toString() === req.user.userId) ||
@@ -254,7 +246,6 @@ exports.updateMeeting = async (req, res) => {
       });
     }
 
-    // Only host or admin can update
     if (meeting.host.toString() !== req.user.userId && !req.user.isAdmin) {
       return res.status(403).json({
         success: false,
@@ -262,7 +253,6 @@ exports.updateMeeting = async (req, res) => {
       });
     }
 
-    // Prevent updates if meeting is processing or ready
     if (['processing', 'ready'].includes(meeting.status)) {
       return res.status(400).json({
         success: false,
@@ -271,7 +261,6 @@ exports.updateMeeting = async (req, res) => {
     }
 
     const oldValue = { ...meeting.toObject() };
-
     Object.assign(meeting, updates);
     await meeting.save();
 
@@ -321,7 +310,6 @@ exports.deleteMeeting = async (req, res) => {
       });
     }
 
-    // Delete from S3 if recording exists
     if (meeting.recordingUrl) {
       try {
         const key = meeting.recordingUrl.split('/').pop();
@@ -331,12 +319,9 @@ exports.deleteMeeting = async (req, res) => {
       }
     }
 
-    // Delete from ChromaDB
     try {
       const collection = await chromaClient.getCollection({ name: 'meeting_transcripts' });
-      await collection.delete({
-        where: { meetingId: id }
-      });
+      await collection.delete({ where: { meetingId: id } });
     } catch (err) {
       logger.warn(`Failed to delete from ChromaDB: ${err.message}`);
     }
@@ -365,8 +350,7 @@ exports.deleteMeeting = async (req, res) => {
   }
 };
 
-// ─── FIX: End meeting ────────────────────────────────────────────────────────
-// Was missing entirely — caused the 404 on "End Meeting" button click.
+// End meeting
 exports.endMeeting = async (req, res) => {
   try {
     const { id } = req.params;
@@ -380,7 +364,6 @@ exports.endMeeting = async (req, res) => {
       });
     }
 
-    // Only the host (or admin) can end the meeting
     if (meeting.host.toString() !== req.user.userId && !req.user.isAdmin) {
       return res.status(403).json({
         success: false,
@@ -388,7 +371,6 @@ exports.endMeeting = async (req, res) => {
       });
     }
 
-    // Guard: don't re-end an already completed/cancelled meeting
     if (['completed', 'cancelled', 'processing', 'ready'].includes(meeting.status)) {
       return res.status(400).json({
         success: false,
@@ -396,7 +378,6 @@ exports.endMeeting = async (req, res) => {
       });
     }
 
-    // Mark all attendees who haven't explicitly left as having left now
     meeting.attendees.forEach(attendee => {
       if (attendee.attended && !attendee.leftAt) {
         attendee.leftAt = new Date();
@@ -406,7 +387,6 @@ exports.endMeeting = async (req, res) => {
     meeting.status = 'completed';
     meeting.endedAt = new Date();
 
-    // Calculate actual duration in minutes
     if (meeting.startedAt) {
       meeting.actualDuration = Math.round(
         (meeting.endedAt - meeting.startedAt) / 60000
@@ -415,7 +395,6 @@ exports.endMeeting = async (req, res) => {
 
     await meeting.save();
 
-    // Notify all attendees the meeting has ended
     const attendeeIds = meeting.attendees
       .map(a => a.user)
       .filter(uid => uid.toString() !== req.user.userId);
@@ -433,7 +412,6 @@ exports.endMeeting = async (req, res) => {
       await Notification.insertMany(notifications);
     }
 
-    // Emit real-time event so all participants in the room know
     const io = req.app.get('io');
     if (io) {
       io.to(id).emit('meeting-ended', {
@@ -442,7 +420,6 @@ exports.endMeeting = async (req, res) => {
       });
     }
 
-    // Audit log
     await AuditLog.create({
       user: req.user.userId,
       action: 'meeting_end',
@@ -466,9 +443,10 @@ exports.endMeeting = async (req, res) => {
     });
   }
 };
-// ─────────────────────────────────────────────────────────────────────────────
 
-// Upload recording from room
+// Upload recording from room — PERMANENT FIX
+// Queue the BullMQ job BEFORE saving the meeting and sending the response
+// so that even if the client disconnects early, the job is already in Redis
 exports.uploadRecording = async (req, res) => {
   try {
     const { id } = req.params;
@@ -489,7 +467,6 @@ exports.uploadRecording = async (req, res) => {
       });
     }
 
-    // Only host can upload recording
     if (meeting.host.toString() !== req.user.userId) {
       return res.status(403).json({
         success: false,
@@ -501,21 +478,7 @@ exports.uploadRecording = async (req, res) => {
     const key = `meetings/${id}/recording-${Date.now()}.webm`;
     await uploadFile(key, req.file.buffer, req.file.mimetype);
 
-    // Update meeting
-    meeting.recordingUrl = key;
-    meeting.recordingSource = 'room';
-    meeting.status = 'processing';
-    meeting.processingSteps.forEach(step => {
-      if (step.step === 'upload') {
-        step.status = 'done';
-        step.timestamp = new Date();
-      }
-    });
-    await meeting.save();
-
-    // Add to processing queue
-    // perDeviceAudio is optional — if present, worker uses per-device transcription
-    // for 100% accurate speaker attribution without pyannote
+    // Parse perDeviceAudio if present
     let perDeviceAudio = null;
     try {
       if (req.body.perDeviceAudio) {
@@ -528,24 +491,47 @@ exports.uploadRecording = async (req, res) => {
       logger.warn(`Failed to parse perDeviceAudio: ${e.message}`);
     }
 
+    // ── PERMANENT FIX: Queue the job FIRST before saving meeting or responding ──
+    // This ensures the job is safely in Redis even if the HTTP connection drops
+    let jobId = null;
     if (meetingQueue) {
-      await meetingQueue.add('process-meeting', {
+      const jobData = {
         meetingId: id,
         audioKey: key,
         ...(perDeviceAudio && perDeviceAudio.length > 0 ? { perDeviceAudio } : {})
-      }, {
+      };
+
+      const job = await meetingQueue.add('process-meeting', jobData, {
         attempts: 3,
-        backoff: {
-          type: 'exponential',
-          delay: 5000
-        }
+        backoff: { type: 'exponential', delay: 5000 }
       });
+      jobId = job.id;
+      logger.info(`Job ${jobId} queued for meeting ${id} BEFORE response`);
     }
+
+    // Now safely update the meeting document
+    meeting.recordingUrl = key;
+    meeting.recordingSource = 'room';
+    meeting.status = 'processing';
+    meeting.processingSteps.forEach(step => {
+      if (step.step === 'upload') {
+        step.status = 'done';
+        step.timestamp = new Date();
+      }
+    });
+
+    // Save perDeviceAudioKeys so requeue script can find them later if needed
+    if (perDeviceAudio && perDeviceAudio.length > 0) {
+      meeting.perDeviceAudioKeys = perDeviceAudio;
+    }
+
+    await meeting.save();
 
     res.json({
       success: true,
       message: 'Recording uploaded and queued for processing',
-      meeting
+      meeting,
+      jobId
     });
   } catch (error) {
     logger.error(`Upload recording error: ${error.message}`);
@@ -574,7 +560,6 @@ exports.manualUpload = async (req, res) => {
       });
     }
 
-    // Validate file type
     const allowedTypes = ['audio/mpeg', 'audio/wav', 'audio/wave', 'audio/x-wav', 'audio/mp4', 'audio/x-m4a'];
     if (!allowedTypes.includes(req.file.mimetype)) {
       return res.status(400).json({
@@ -583,7 +568,6 @@ exports.manualUpload = async (req, res) => {
       });
     }
 
-    // Validate file size (100MB)
     if (req.file.size > 100 * 1024 * 1024) {
       return res.status(400).json({
         success: false,
@@ -593,7 +577,6 @@ exports.manualUpload = async (req, res) => {
 
     const host = req.user.userId;
 
-    // Format attendees
     const attendeeUsers = await User.find({
       _id: { $in: attendees.map(a => a.user || a) },
       isActive: true
@@ -607,7 +590,6 @@ exports.manualUpload = async (req, res) => {
       formattedAttendees.push({ user: host });
     }
 
-    // Create meeting
     const meeting = new Meeting({
       name,
       scheduledDate: new Date(scheduledDate),
@@ -627,7 +609,6 @@ exports.manualUpload = async (req, res) => {
       ]
     });
 
-    // Upload to S3
     const ext = path.extname(req.file.originalname) || '.mp3';
     const key = `meetings/${meeting._id}/upload-${Date.now()}${ext}`;
     await uploadFile(key, req.file.buffer, req.file.mimetype);
@@ -635,17 +616,13 @@ exports.manualUpload = async (req, res) => {
     meeting.recordingUrl = key;
     await meeting.save();
 
-    // Add to processing queue
     if (meetingQueue) {
       await meetingQueue.add('process-meeting', {
         meetingId: meeting._id.toString(),
         audioKey: key
       }, {
         attempts: 3,
-        backoff: {
-          type: 'exponential',
-          delay: 5000
-        }
+        backoff: { type: 'exponential', delay: 5000 }
       });
     }
 
@@ -678,7 +655,6 @@ exports.getProcessingStatus = async (req, res) => {
       });
     }
 
-    // Check access
     const hasAccess =
       meeting.host?.toString() === req.user.userId ||
       meeting.attendees?.some(a => a.user?.toString() === req.user.userId) ||
@@ -728,7 +704,6 @@ exports.meetingQA = async (req, res) => {
       });
     }
 
-    // Check access
     const hasAccess =
       meeting.host.toString() === req.user.userId ||
       meeting.attendees.some(a => a.user.toString() === req.user.userId) ||
@@ -741,7 +716,6 @@ exports.meetingQA = async (req, res) => {
       });
     }
 
-    // Check if meeting is ready
     if (meeting.status !== 'ready') {
       return res.status(400).json({
         success: false,
@@ -821,7 +795,6 @@ exports.scheduleFollowup = async (req, res) => {
       });
     }
 
-    // Check access
     const hasAccess =
       parentMeeting.host.toString() === req.user.userId ||
       req.user.isAdmin;
@@ -833,7 +806,6 @@ exports.scheduleFollowup = async (req, res) => {
       });
     }
 
-    // Create follow-up meeting with pre-filled data
     const followUpMeeting = new Meeting({
       ...meetingData,
       host: req.user.userId,
@@ -854,11 +826,9 @@ exports.scheduleFollowup = async (req, res) => {
 
     await followUpMeeting.save();
 
-    // Update parent meeting
     parentMeeting.childMeetingIds.push(followUpMeeting._id);
     await parentMeeting.save();
 
-    // Create notifications
     const notifications = followUpMeeting.attendees
       .filter(a => a.user.toString() !== req.user.userId)
       .map(a => ({
@@ -901,7 +871,6 @@ exports.joinMeeting = async (req, res) => {
       });
     }
 
-    // Check if user is attendee
     const attendeeIndex = meeting.attendees.findIndex(
       a => a.user.toString() === req.user.userId
     );
@@ -913,7 +882,6 @@ exports.joinMeeting = async (req, res) => {
       });
     }
 
-    // Update attendance
     meeting.attendees[attendeeIndex].attended = true;
     meeting.attendees[attendeeIndex].joinedAt = new Date();
 
@@ -1009,7 +977,6 @@ exports.exportToPDF = async (req, res) => {
       });
     }
 
-    // Check access
     const hasAccess =
       meeting.host._id.toString() === req.user.userId ||
       meeting.attendees.some(a => a.user._id.toString() === req.user.userId) ||
@@ -1025,10 +992,7 @@ exports.exportToPDF = async (req, res) => {
     res.json({
       success: true,
       message: 'PDF generation endpoint',
-      data: {
-        meeting,
-        generatedAt: new Date()
-      }
+      data: { meeting, generatedAt: new Date() }
     });
   } catch (error) {
     logger.error(`Export PDF error: ${error.message}`);
@@ -1039,7 +1003,7 @@ exports.exportToPDF = async (req, res) => {
   }
 };
 
-// Cancel meeting — only host can cancel
+// Cancel meeting
 exports.cancelMeeting = async (req, res) => {
   try {
     const { id } = req.params;

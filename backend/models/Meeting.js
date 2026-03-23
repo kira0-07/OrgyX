@@ -6,31 +6,12 @@ const attendeeSchema = new mongoose.Schema({
     ref: 'User',
     required: true
   },
-  attended: {
-    type: Boolean,
-    default: false
-  },
-  joinedAt: {
-    type: Date,
-    default: null
-  },
-  leftAt: {
-    type: Date,
-    default: null
-  },
-  contributionScore: {
-    type: Number,
-    min: 0,
-    max: 10,
-    default: null
-  },
-  speakingTime: {
-    type: Number, // in seconds
-    default: 0
-  },
-  keyPoints: [{
-    type: String
-  }]
+  attended: { type: Boolean, default: false },
+  joinedAt: { type: Date, default: null },
+  leftAt: { type: Date, default: null },
+  contributionScore: { type: Number, min: 0, max: 10, default: null },
+  speakingTime: { type: Number, default: 0 },
+  keyPoints: [{ type: String }]
 });
 
 const actionItemSchema = new mongoose.Schema({
@@ -39,80 +20,40 @@ const actionItemSchema = new mongoose.Schema({
     ref: 'User',
     required: true
   },
-  task: {
-    type: String,
-    required: true
-  },
-  deadline: {
-    type: Date,
-    default: null
-  },
+  task: { type: String, required: true },
+  deadline: { type: Date, default: null },
   status: {
     type: String,
     enum: ['pending', 'in_progress', 'completed', 'cancelled'],
     default: 'pending'
   },
-  completedAt: {
-    type: Date,
-    default: null
-  }
+  completedAt: { type: Date, default: null }
 });
 
 const processingStepSchema = new mongoose.Schema({
-  step: {
-    type: String,
-    required: true
-  },
+  step: { type: String, required: true },
   status: {
     type: String,
     enum: ['pending', 'running', 'done', 'failed'],
     default: 'pending'
   },
-  timestamp: {
-    type: Date,
-    default: Date.now
-  },
-  message: {
-    type: String,
-    default: null
-  }
+  timestamp: { type: Date, default: Date.now },
+  message: { type: String, default: null }
 });
 
 const meetingSchema = new mongoose.Schema({
-  name: {
-    type: String,
-    required: true,
-    trim: true
-  },
-  description: {
-    type: String,
-    default: ''
-  },
-  scheduledDate: {
-    type: Date,
-    required: true
-  },
-  estimatedDuration: {
-    type: Number, // in minutes
-    default: 0
-  },
-  actualDuration: {
-    type: Number, // in minutes
-    default: null
-  },
+  name: { type: String, required: true, trim: true },
+  description: { type: String, default: '' },
+  scheduledDate: { type: Date, required: true },
+  estimatedDuration: { type: Number, default: 0 },
+  actualDuration: { type: Number, default: null },
   domain: {
     type: String,
     required: true,
     enum: ['Sprint Planning', 'Performance Review', 'Architecture Discussion', '1:1', 'All-Hands', 'Custom']
   },
-  agenda: {
-    type: String,
-    default: ''
-  },
-  externalLink: {
-    type: String,
-    default: null
-  },
+  agenda: { type: String, default: '' },
+  externalLink: { type: String, default: null },
   host: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User',
@@ -124,45 +65,33 @@ const meetingSchema = new mongoose.Schema({
     enum: ['scheduled', 'live', 'completed', 'processing', 'ready', 'cancelled'],
     default: 'scheduled'
   },
-  recordingUrl: {
-    type: String,
-    default: null
-  },
+  recordingUrl: { type: String, default: null },
   recordingSource: {
     type: String,
     enum: ['room', 'upload', null],
     default: null
   },
-  transcriptRaw: {
-    type: String,
-    default: null
-  },
+  // ── PERMANENT FIX: store per-device S3 keys so requeue script can find them ──
+  perDeviceAudioKeys: [{
+    userId: String,
+    userName: String,
+    audioKey: String
+  }],
+  transcriptRaw: { type: String, default: null },
   transcriptSegments: [{
     speaker: String,
     text: String,
-    startTime: Number, // in seconds
+    startTime: Number,
     endTime: Number,
     confidence: Number
   }],
-  summary: {
-    type: String,
-    default: null
-  },
-  conclusions: [{
-    type: String
-  }],
-  decisions: [{
-    type: String
-  }],
+  summary: { type: String, default: null },
+  conclusions: [{ type: String }],
+  decisions: [{ type: String }],
   actionItems: [actionItemSchema],
-  followUpTopics: [{
-    type: String
-  }],
+  followUpTopics: [{ type: String }],
   attendeeContributions: [{
-    user: {
-      type: mongoose.Schema.Types.ObjectId,
-      ref: 'User'
-    },
+    user: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
     score: Number,
     keyPoints: [String],
     speakingTime: Number
@@ -177,30 +106,12 @@ const meetingSchema = new mongoose.Schema({
     ref: 'Meeting'
   }],
   processingSteps: [processingStepSchema],
-  processingError: {
-    type: String,
-    default: null
-  },
-  startedAt: {
-    type: Date,
-    default: null
-  },
-  endedAt: {
-    type: Date,
-    default: null
-  },
-  isRecording: {
-    type: Boolean,
-    default: false
-  },
-  recordingStartedAt: {
-    type: Date,
-    default: null
-  },
-  recordingStoppedAt: {
-    type: Date,
-    default: null
-  }
+  processingError: { type: String, default: null },
+  startedAt: { type: Date, default: null },
+  endedAt: { type: Date, default: null },
+  isRecording: { type: Boolean, default: false },
+  recordingStartedAt: { type: Date, default: null },
+  recordingStoppedAt: { type: Date, default: null }
 }, {
   timestamps: true
 });
@@ -214,12 +125,10 @@ meetingSchema.index({ 'attendees.user': 1 });
 meetingSchema.index({ parentMeetingId: 1 });
 meetingSchema.index({ createdAt: -1 });
 
-// Virtual for attendee count
 meetingSchema.virtual('attendeeCount').get(function() {
   return this.attendees.length;
 });
 
-// Virtual for duration
 meetingSchema.virtual('duration').get(function() {
   if (this.actualDuration) return this.actualDuration;
   if (this.startedAt && this.endedAt) {

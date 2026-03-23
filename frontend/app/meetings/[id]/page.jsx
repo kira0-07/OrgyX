@@ -30,11 +30,10 @@ export default function MeetingDetailPage({ params }) {
   const [meeting, setMeeting] = useState(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isEnding, setIsEnding] = useState(false);
-  const [showEndConfirm, setShowEndConfirm] = useState(false); // FIX: modal instead of confirm()
+  const [showEndConfirm, setShowEndConfirm] = useState(false);
   const [processingStatus, setProcessingStatus] = useState(null);
   const [activeTab, setActiveTab] = useState('summary');
 
-  // Transcript speaker correction state
   const [transcriptSegments, setTranscriptSegments] = useState([]);
   const [editingSegmentIdx, setEditingSegmentIdx] = useState(null);
   const [transcriptHasChanges, setTranscriptHasChanges] = useState(false);
@@ -45,9 +44,7 @@ export default function MeetingDetailPage({ params }) {
     'text-yellow-400', 'text-pink-400', 'text-cyan-400',
   ];
 
-  useEffect(() => {
-    fetchMeeting();
-  }, [params?.id]);
+  useEffect(() => { fetchMeeting(); }, [params?.id]);
 
   useEffect(() => {
     if (meeting?.status === 'processing') {
@@ -62,9 +59,7 @@ export default function MeetingDetailPage({ params }) {
       const response = await api.get(`/meetings/${params.id}`);
       setMeeting(response.data.meeting);
       setTranscriptSegments(response.data.meeting?.transcriptSegments || []);
-      if (response.data.meeting?.status === 'processing') {
-        fetchProcessingStatus();
-      }
+      if (response.data.meeting?.status === 'processing') fetchProcessingStatus();
     } catch (error) {
       console.error('Failed to fetch meeting:', error);
       toast.error('Failed to fetch meeting details');
@@ -77,15 +72,12 @@ export default function MeetingDetailPage({ params }) {
     try {
       const response = await api.get(`/meetings/${params.id}/processing-status`);
       setProcessingStatus(response.data);
-      if (response.data.status === 'ready') {
-        fetchMeeting();
-      }
+      if (response.data.status === 'ready') fetchMeeting();
     } catch (error) {
       console.error('Failed to fetch processing status:', error);
     }
   };
 
-  // FIX: no confirm() — uses modal state instead
   const handleEndMeeting = async () => {
     setShowEndConfirm(false);
     setIsEnding(true);
@@ -100,7 +92,6 @@ export default function MeetingDetailPage({ params }) {
     }
   };
 
-  // Transcript speaker correction handlers
   const uniqueSpeakers = [...new Set(transcriptSegments.map(s => s.speaker).filter(Boolean))];
   const speakerColorMap = Object.fromEntries(
     uniqueSpeakers.map((name, i) => [name, SPEAKER_COLORS[i % SPEAKER_COLORS.length]])
@@ -131,7 +122,6 @@ export default function MeetingDetailPage({ params }) {
     }
   };
 
-  // Helper to resolve attendee contribution name
   const getContributionName = (c) => {
     if (c.user?.firstName) return `${c.user.firstName} ${c.user.lastName || ''}`.trim();
     if (c.name) return c.name;
@@ -144,7 +134,6 @@ export default function MeetingDetailPage({ params }) {
     return 'Unknown';
   };
 
-  // FIX: format timestamp correctly — Math.floor prevents 1:9.68 showing
   const formatTime = (seconds) => {
     const s = seconds || 0;
     const mins = Math.floor(s / 60);
@@ -158,23 +147,18 @@ export default function MeetingDetailPage({ params }) {
     const duration = `${meeting.actualDuration || meeting.estimatedDuration || 0} min`;
     const attendeeNames = (meeting.attendees || [])
       .map(a => a.user ? `${a.user.firstName || ''} ${a.user.lastName || ''}`.trim() : '')
-      .filter(Boolean)
-      .join(', ');
-
+      .filter(Boolean).join(', ');
     const transcript = transcriptSegments.length > 0
       ? transcriptSegments.map(seg => `  [${formatTime(seg.startTime)}] ${seg.speaker}: ${seg.text}`).join('\n')
       : (meeting.transcriptRaw || 'No transcript available');
-
     const contributions = (meeting.attendeeContributions || []).map(c => {
       const score = c.contributionScore ?? c.score ?? 0;
       const kp = Array.isArray(c.keyPoints) ? c.keyPoints.join('; ') : (c.keyPoints || '—');
       return `  ${getContributionName(c)}: Score ${score}/10 | Key Points: ${kp}`;
     }).join('\n');
-
     return { meetingDate, duration, attendeeNames, transcript, contributions };
   };
 
-  // PDF EXPORT
   const handleExportPDF = async () => {
     if (!meeting) return;
     const loadingToast = toast.loading('Generating PDF...');
@@ -183,211 +167,105 @@ export default function MeetingDetailPage({ params }) {
         if (window.jspdf) return resolve();
         const script = document.createElement('script');
         script.src = 'https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js';
-        script.onload = resolve;
-        script.onerror = reject;
+        script.onload = resolve; script.onerror = reject;
         document.head.appendChild(script);
       });
-
       const { jsPDF } = window.jspdf;
       const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
       const s = buildExportSections();
-      const pageW = 210;
-      const margin = 18;
-      const contentW = pageW - margin * 2;
+      const pageW = 210, margin = 18, contentW = pageW - margin * 2;
       let y = 20;
-
-      const ACCENT = [108, 99, 255];
-      const DARK = [30, 30, 46];
-      const GREY = [100, 100, 120];
-      const LIGHT = [240, 240, 248];
-
-      const checkPage = (needed = 10) => {
-        if (y + needed > 275) { doc.addPage(); y = 20; }
-      };
-
+      const ACCENT = [108, 99, 255], DARK = [30, 30, 46], GREY = [100, 100, 120], LIGHT = [240, 240, 248];
+      const checkPage = (needed = 10) => { if (y + needed > 275) { doc.addPage(); y = 20; } };
       const sectionHeader = (title) => {
         checkPage(14);
-        doc.setFillColor(...ACCENT);
-        doc.roundedRect(margin, y, contentW, 9, 2, 2, 'F');
-        doc.setTextColor(255, 255, 255);
-        doc.setFontSize(10);
-        doc.setFont('helvetica', 'bold');
-        doc.text(title, margin + 4, y + 6.2);
-        y += 13;
-        doc.setTextColor(...DARK);
-        doc.setFont('helvetica', 'normal');
-        doc.setFontSize(9.5);
+        doc.setFillColor(...ACCENT); doc.roundedRect(margin, y, contentW, 9, 2, 2, 'F');
+        doc.setTextColor(255, 255, 255); doc.setFontSize(10); doc.setFont('helvetica', 'bold');
+        doc.text(title, margin + 4, y + 6.2); y += 13;
+        doc.setTextColor(...DARK); doc.setFont('helvetica', 'normal'); doc.setFontSize(9.5);
       };
-
       const bodyText = (text, indent = 0) => {
         if (!text) return;
         const lines = doc.splitTextToSize(text, contentW - indent);
-        lines.forEach(line => { checkPage(6); doc.text(line, margin + indent, y); y += 5.5; });
-        y += 1;
+        lines.forEach(line => { checkPage(6); doc.text(line, margin + indent, y); y += 5.5; }); y += 1;
       };
-
       const labelValue = (label, value) => {
-        checkPage(6);
-        doc.setFont('helvetica', 'bold');
-        doc.setFontSize(9);
-        doc.setTextColor(...GREY);
-        doc.text(label + ':', margin, y);
-        doc.setFont('helvetica', 'normal');
-        doc.setTextColor(...DARK);
-        doc.setFontSize(9.5);
+        checkPage(6); doc.setFont('helvetica', 'bold'); doc.setFontSize(9); doc.setTextColor(...GREY);
+        doc.text(label + ':', margin, y); doc.setFont('helvetica', 'normal'); doc.setTextColor(...DARK); doc.setFontSize(9.5);
         const lines = doc.splitTextToSize(value || '—', contentW - 38);
-        doc.text(lines[0], margin + 38, y);
-        y += 5.5;
-        if (lines.length > 1) {
-          lines.slice(1).forEach(l => { checkPage(6); doc.text(l, margin + 38, y); y += 5.5; });
-        }
+        doc.text(lines[0], margin + 38, y); y += 5.5;
+        if (lines.length > 1) { lines.slice(1).forEach(l => { checkPage(6); doc.text(l, margin + 38, y); y += 5.5; }); }
       };
-
-      // HEADER
-      doc.setFillColor(...DARK);
-      doc.rect(0, 0, 210, 32, 'F');
-      doc.setTextColor(255, 255, 255);
-      doc.setFontSize(18);
-      doc.setFont('helvetica', 'bold');
-      doc.text('Meeting Report', margin, 15);
-      doc.setFontSize(10);
-      doc.setFont('helvetica', 'normal');
+      doc.setFillColor(...DARK); doc.rect(0, 0, 210, 32, 'F');
+      doc.setTextColor(255, 255, 255); doc.setFontSize(18); doc.setFont('helvetica', 'bold');
+      doc.text('Meeting Report', margin, 15); doc.setFontSize(10); doc.setFont('helvetica', 'normal');
       doc.setTextColor(180, 180, 200);
-      doc.text(`${meeting.name || ''}  •  ${s.meetingDate}  •  ${meeting.domain || ''}`, margin, 24);
-      y = 42;
-
-      // MEETING DETAILS
-      doc.setFillColor(...LIGHT);
-      doc.roundedRect(margin, y, contentW, 36, 3, 3, 'F');
-      y += 6;
-      doc.setTextColor(...DARK);
-      doc.setFontSize(9.5);
-      labelValue('Title', meeting.name);
-      labelValue('Date', s.meetingDate);
-      labelValue('Duration', s.duration);
-      labelValue('Type', meeting.domain);
-      labelValue('Attendees', s.attendeeNames);
-      y += 4;
-
-      sectionHeader('Summary');
-      bodyText(meeting.summary || 'No summary available.');
-
-      if (meeting.conclusions?.length > 0) {
-        sectionHeader('Key Conclusions');
-        meeting.conclusions.forEach((c, i) => bodyText(`${i + 1}. ${c}`, 4));
-      }
-
-      if (meeting.decisions?.length > 0) {
-        sectionHeader('Decisions');
-        meeting.decisions.forEach((d, i) => bodyText(`${i + 1}. ${d}`, 4));
-      }
-
+      doc.text(`${meeting.name || ''}  •  ${s.meetingDate}  •  ${meeting.domain || ''}`, margin, 24); y = 42;
+      doc.setFillColor(...LIGHT); doc.roundedRect(margin, y, contentW, 36, 3, 3, 'F'); y += 6;
+      doc.setTextColor(...DARK); doc.setFontSize(9.5);
+      labelValue('Title', meeting.name); labelValue('Date', s.meetingDate); labelValue('Duration', s.duration);
+      labelValue('Type', meeting.domain); labelValue('Attendees', s.attendeeNames); y += 4;
+      sectionHeader('Summary'); bodyText(meeting.summary || 'No summary available.');
+      if (meeting.conclusions?.length > 0) { sectionHeader('Key Conclusions'); meeting.conclusions.forEach((c, i) => bodyText(`${i + 1}. ${c}`, 4)); }
+      if (meeting.decisions?.length > 0) { sectionHeader('Decisions'); meeting.decisions.forEach((d, i) => bodyText(`${i + 1}. ${d}`, 4)); }
       sectionHeader('Action Items');
       if (meeting.actionItems?.length > 0) {
         meeting.actionItems.forEach((item, i) => {
           const owner = item.owner ? `${item.owner.firstName || ''} ${item.owner.lastName || ''}`.trim() : 'Unassigned';
           const deadline = item.deadline ? format(new Date(item.deadline), 'MMM d, yyyy') : 'No deadline';
-          checkPage(14);
-          doc.setFillColor(245, 245, 252);
-          doc.roundedRect(margin, y, contentW, 12, 2, 2, 'F');
-          doc.setFont('helvetica', 'bold');
-          doc.setFontSize(9.5);
-          doc.setTextColor(...DARK);
+          checkPage(14); doc.setFillColor(245, 245, 252); doc.roundedRect(margin, y, contentW, 12, 2, 2, 'F');
+          doc.setFont('helvetica', 'bold'); doc.setFontSize(9.5); doc.setTextColor(...DARK);
           const taskLines = doc.splitTextToSize(`${i + 1}. ${item.task || ''}`, contentW - 8);
-          doc.text(taskLines[0], margin + 4, y + 4.5);
-          doc.setFont('helvetica', 'normal');
-          doc.setFontSize(8.5);
-          doc.setTextColor(...GREY);
-          doc.text(`Owner: ${owner}  |  Due: ${deadline}  |  Status: ${(item.status || 'pending').replace(/_/g, ' ')}`, margin + 4, y + 9.5);
-          y += 15;
+          doc.text(taskLines[0], margin + 4, y + 4.5); doc.setFont('helvetica', 'normal'); doc.setFontSize(8.5); doc.setTextColor(...GREY);
+          doc.text(`Owner: ${owner}  |  Due: ${deadline}  |  Status: ${(item.status || 'pending').replace(/_/g, ' ')}`, margin + 4, y + 9.5); y += 15;
         });
-      } else {
-        bodyText('No action items recorded.');
-      }
-
-      if (meeting.followUpTopics?.length > 0) {
-        sectionHeader('Follow-up Topics');
-        meeting.followUpTopics.forEach((f, i) => bodyText(`${i + 1}. ${f}`, 4));
-      }
-
+      } else { bodyText('No action items recorded.'); }
+      if (meeting.followUpTopics?.length > 0) { sectionHeader('Follow-up Topics'); meeting.followUpTopics.forEach((f, i) => bodyText(`${i + 1}. ${f}`, 4)); }
       if (meeting.attendeeContributions?.length > 0) {
         sectionHeader('Attendee Contributions');
         meeting.attendeeContributions.forEach(c => {
           const score = c.contributionScore ?? c.score ?? 0;
           const kp = Array.isArray(c.keyPoints) ? c.keyPoints.join('; ') : (c.keyPoints || '—');
           const name = getContributionName(c);
-          checkPage(12);
-          const barColor = score >= 8 ? [46, 125, 50] : score >= 5 ? [230, 81, 0] : [183, 28, 28];
-          doc.setFillColor(245, 245, 252);
-          doc.roundedRect(margin, y, contentW, 11, 2, 2, 'F');
-          doc.setFont('helvetica', 'bold');
-          doc.setFontSize(9.5);
-          doc.setTextColor(...DARK);
-          doc.text(name, margin + 4, y + 4.5);
-          doc.setFillColor(...barColor);
-          doc.roundedRect(margin + contentW - 22, y + 2, (score / 10) * 18, 7, 1, 1, 'F');
-          doc.setTextColor(255, 255, 255);
-          doc.setFontSize(8);
-          doc.text(`${score}/10`, margin + contentW - 21, y + 7);
-          doc.setFont('helvetica', 'normal');
-          doc.setFontSize(8);
-          doc.setTextColor(...GREY);
+          checkPage(12); const barColor = score >= 8 ? [46, 125, 50] : score >= 5 ? [230, 81, 0] : [183, 28, 28];
+          doc.setFillColor(245, 245, 252); doc.roundedRect(margin, y, contentW, 11, 2, 2, 'F');
+          doc.setFont('helvetica', 'bold'); doc.setFontSize(9.5); doc.setTextColor(...DARK); doc.text(name, margin + 4, y + 4.5);
+          doc.setFillColor(...barColor); doc.roundedRect(margin + contentW - 22, y + 2, (score / 10) * 18, 7, 1, 1, 'F');
+          doc.setTextColor(255, 255, 255); doc.setFontSize(8); doc.text(`${score}/10`, margin + contentW - 21, y + 7);
+          doc.setFont('helvetica', 'normal'); doc.setFontSize(8); doc.setTextColor(...GREY);
           const kpLines = doc.splitTextToSize(`Key Points: ${kp}`, contentW - 30);
-          doc.text(kpLines[0], margin + 4, y + 9);
-          y += 14;
+          doc.text(kpLines[0], margin + 4, y + 9); y += 14;
         });
       }
-
       sectionHeader('Transcript');
       if (transcriptSegments.length > 0) {
         transcriptSegments.forEach(seg => {
-          checkPage(12);
-          doc.setFont('helvetica', 'bold');
-          doc.setFontSize(8.5);
-          doc.setTextColor(...ACCENT);
-          doc.text(`${seg.speaker}  `, margin, y);
-          const spkW = doc.getTextWidth(`${seg.speaker}  `);
-          doc.setFont('helvetica', 'normal');
-          doc.setTextColor(...GREY);
-          doc.text(`[${formatTime(seg.startTime)}]`, margin + spkW, y);
-          y += 4.5;
-          doc.setTextColor(...DARK);
-          doc.setFontSize(9);
+          checkPage(12); doc.setFont('helvetica', 'bold'); doc.setFontSize(8.5); doc.setTextColor(...ACCENT);
+          doc.text(`${seg.speaker}  `, margin, y); const spkW = doc.getTextWidth(`${seg.speaker}  `);
+          doc.setFont('helvetica', 'normal'); doc.setTextColor(...GREY); doc.text(`[${formatTime(seg.startTime)}]`, margin + spkW, y); y += 4.5;
+          doc.setTextColor(...DARK); doc.setFontSize(9);
           const lines = doc.splitTextToSize(seg.text || '', contentW - 4);
-          lines.forEach(line => { checkPage(5); doc.text(line, margin + 2, y); y += 4.8; });
-          y += 1;
+          lines.forEach(line => { checkPage(5); doc.text(line, margin + 2, y); y += 4.8; }); y += 1;
         });
       } else if (meeting.transcriptRaw) {
         const rawLines = doc.splitTextToSize(meeting.transcriptRaw, contentW);
         rawLines.forEach(line => { checkPage(5); doc.setFontSize(9); doc.setTextColor(...DARK); doc.text(line, margin, y); y += 4.8; });
-      } else {
-        bodyText('No transcript available.');
-      }
-
+      } else { bodyText('No transcript available.'); }
       const totalPages = doc.internal.getNumberOfPages();
       for (let i = 1; i <= totalPages; i++) {
-        doc.setPage(i);
-        doc.setFillColor(...DARK);
-        doc.rect(0, 285, 210, 12, 'F');
-        doc.setTextColor(150, 150, 170);
-        doc.setFontSize(7.5);
-        doc.setFont('helvetica', 'normal');
+        doc.setPage(i); doc.setFillColor(...DARK); doc.rect(0, 285, 210, 12, 'F');
+        doc.setTextColor(150, 150, 170); doc.setFontSize(7.5); doc.setFont('helvetica', 'normal');
         doc.text('Generated by OrgOS  •  AI-Powered Organization Operating System', margin, 292);
         doc.text(`Page ${i} of ${totalPages}`, 210 - margin, 292, { align: 'right' });
       }
-
       const safeName = (meeting.name || 'meeting').replace(/[^a-z0-9]/gi, '_').toLowerCase();
       doc.save(`${safeName}_report.pdf`);
-      toast.dismiss(loadingToast);
-      toast.success('PDF exported!');
+      toast.dismiss(loadingToast); toast.success('PDF exported!');
     } catch (err) {
-      console.error('PDF export failed:', err);
-      toast.dismiss(loadingToast);
-      toast.error('PDF export failed. Please try again.');
+      console.error('PDF export failed:', err); toast.dismiss(loadingToast); toast.error('PDF export failed. Please try again.');
     }
   };
 
-  // DOCX EXPORT
   const handleExportDOCX = async () => {
     if (!meeting) return;
     const loadingToast = toast.loading('Generating DOCX...');
@@ -399,276 +277,72 @@ export default function MeetingDetailPage({ params }) {
         const script = document.createElement('script');
         script.id = 'docx-cdn';
         script.src = 'https://unpkg.com/docx@8.2.2/build/index.umd.js';
-        script.onload = () => {
-          if (window.docx && window.docx.Document) return resolve();
-          reject(new Error('docx library loaded but Document not found'));
-        };
+        script.onload = () => { if (window.docx && window.docx.Document) return resolve(); reject(new Error('docx library loaded but Document not found')); };
         script.onerror = () => {
           const s2 = document.createElement('script');
           s2.src = 'https://cdnjs.cloudflare.com/ajax/libs/docx/7.8.2/docx.umd.min.js';
-          s2.onload = () => resolve();
-          s2.onerror = () => reject(new Error('Failed to load docx library'));
+          s2.onload = () => resolve(); s2.onerror = () => reject(new Error('Failed to load docx library'));
           document.head.appendChild(s2);
         };
         document.head.appendChild(script);
       });
-
       const docxLib = window.docx;
       if (!docxLib || !docxLib.Document) throw new Error('docx library not available');
-
-      const {
-        Document, Packer, Paragraph, TextRun, Table, TableRow, TableCell,
-        HeadingLevel, AlignmentType, BorderStyle, WidthType, ShadingType,
-        VerticalAlign, Header, Footer
-      } = docxLib;
-
+      const { Document, Packer, Paragraph, TextRun, Table, TableRow, TableCell, HeadingLevel, AlignmentType, BorderStyle, WidthType, ShadingType, VerticalAlign, Header, Footer } = docxLib;
       const s = buildExportSections();
-      const ACCENT_COLOR = '6C63FF';
-      const DARK_COLOR = '1E1E2E';
-      const GREY_COLOR = '6B7280';
-      const LIGHT_BG = 'F0F0F8';
-
+      const ACCENT_COLOR = '6C63FF', DARK_COLOR = '1E1E2E', GREY_COLOR = '6B7280', LIGHT_BG = 'F0F0F8';
       const border = { style: BorderStyle.SINGLE, size: 1, color: 'D0CEEE' };
       const borders = { top: border, bottom: border, left: border, right: border };
-
-      const sectionHeading = (text) => new Paragraph({
-        spacing: { before: 280, after: 100 },
-        shading: { fill: ACCENT_COLOR, type: ShadingType.CLEAR },
-        children: [new TextRun({ text, bold: true, color: 'FFFFFF', size: 22, font: 'Arial' })],
-        indent: { left: 120, right: 120 },
-      });
-
-      const bodyPara = (text, opts = {}) => new Paragraph({
-        spacing: { before: 60, after: 60 },
-        children: [new TextRun({
-          text: text || '',
-          size: 20, font: 'Arial',
-          color: opts.muted ? GREY_COLOR : DARK_COLOR,
-          italics: opts.italic || false,
-          bold: opts.bold || false,
-        })],
-        indent: opts.indent ? { left: opts.indent } : undefined,
-      });
-
-      const numberedItem = (text, num) => new Paragraph({
-        spacing: { before: 80, after: 80 },
-        indent: { left: 360, hanging: 280 },
-        children: [
-          new TextRun({ text: `${num}.  `, bold: true, color: ACCENT_COLOR, size: 20, font: 'Arial' }),
-          new TextRun({ text: text || '', size: 20, font: 'Arial', color: DARK_COLOR }),
-        ]
-      });
-
-      const infoTable = (rows) => new Table({
-        width: { size: 9360, type: WidthType.DXA },
-        columnWidths: [2200, 7160],
-        rows: rows.map(([label, value]) => new TableRow({
-          children: [
-            new TableCell({
-              borders, width: { size: 2200, type: WidthType.DXA },
-              shading: { fill: LIGHT_BG, type: ShadingType.CLEAR },
-              margins: { top: 80, bottom: 80, left: 120, right: 120 },
-              children: [new Paragraph({ children: [new TextRun({ text: label, bold: true, size: 18, color: GREY_COLOR, font: 'Arial' })] })]
-            }),
-            new TableCell({
-              borders, width: { size: 7160, type: WidthType.DXA },
-              margins: { top: 80, bottom: 80, left: 120, right: 120 },
-              children: [new Paragraph({ children: [new TextRun({ text: value || '—', size: 20, font: 'Arial', color: DARK_COLOR })] })]
-            }),
-          ]
-        }))
-      });
-
+      const sectionHeading = (text) => new Paragraph({ spacing: { before: 280, after: 100 }, shading: { fill: ACCENT_COLOR, type: ShadingType.CLEAR }, children: [new TextRun({ text, bold: true, color: 'FFFFFF', size: 22, font: 'Arial' })], indent: { left: 120, right: 120 } });
+      const bodyPara = (text, opts = {}) => new Paragraph({ spacing: { before: 60, after: 60 }, children: [new TextRun({ text: text || '', size: 20, font: 'Arial', color: opts.muted ? GREY_COLOR : DARK_COLOR, italics: opts.italic || false, bold: opts.bold || false })], indent: opts.indent ? { left: opts.indent } : undefined });
+      const numberedItem = (text, num) => new Paragraph({ spacing: { before: 80, after: 80 }, indent: { left: 360, hanging: 280 }, children: [new TextRun({ text: `${num}.  `, bold: true, color: ACCENT_COLOR, size: 20, font: 'Arial' }), new TextRun({ text: text || '', size: 20, font: 'Arial', color: DARK_COLOR })] });
+      const infoTable = (rows) => new Table({ width: { size: 9360, type: WidthType.DXA }, columnWidths: [2200, 7160], rows: rows.map(([label, value]) => new TableRow({ children: [new TableCell({ borders, width: { size: 2200, type: WidthType.DXA }, shading: { fill: LIGHT_BG, type: ShadingType.CLEAR }, margins: { top: 80, bottom: 80, left: 120, right: 120 }, children: [new Paragraph({ children: [new TextRun({ text: label, bold: true, size: 18, color: GREY_COLOR, font: 'Arial' })] })] }), new TableCell({ borders, width: { size: 7160, type: WidthType.DXA }, margins: { top: 80, bottom: 80, left: 120, right: 120 }, children: [new Paragraph({ children: [new TextRun({ text: value || '—', size: 20, font: 'Arial', color: DARK_COLOR })] })] })] })) });
       const actionTable = (items) => {
         if (!items?.length) return bodyPara('No action items recorded.', { muted: true, italic: true });
-        return new Table({
-          width: { size: 9360, type: WidthType.DXA },
-          columnWidths: [3800, 2000, 1800, 1760],
-          rows: [
-            new TableRow({
-              tableHeader: true,
-              children: ['Task', 'Assigned To', 'Deadline', 'Status'].map(h =>
-                new TableCell({
-                  borders,
-                  shading: { fill: '3D3A6E', type: ShadingType.CLEAR },
-                  margins: { top: 80, bottom: 80, left: 120, right: 120 },
-                  children: [new Paragraph({ children: [new TextRun({ text: h, bold: true, color: 'FFFFFF', size: 18, font: 'Arial' })] })]
-                })
-              )
-            }),
-            ...items.map((item, i) => {
-              const owner = item.owner ? `${item.owner.firstName || ''} ${item.owner.lastName || ''}`.trim() : 'Unassigned';
-              const deadline = item.deadline ? format(new Date(item.deadline), 'MMM d, yyyy') : '—';
-              const statusColor = item.status === 'completed' ? '2E7D32' : item.status === 'in_progress' ? '1565C0' : 'E65100';
-              const bg = i % 2 === 0 ? 'FFFFFF' : 'F5F4FF';
-              return new TableRow({
-                children: [
-                  new TableCell({ borders, width: { size: 3800, type: WidthType.DXA }, shading: { fill: bg, type: ShadingType.CLEAR }, margins: { top: 80, bottom: 80, left: 120, right: 120 }, children: [new Paragraph({ children: [new TextRun({ text: item.task || '', size: 19, font: 'Arial', color: DARK_COLOR })] })] }),
-                  new TableCell({ borders, width: { size: 2000, type: WidthType.DXA }, shading: { fill: bg, type: ShadingType.CLEAR }, margins: { top: 80, bottom: 80, left: 120, right: 120 }, children: [new Paragraph({ children: [new TextRun({ text: owner, size: 18, font: 'Arial', color: DARK_COLOR })] })] }),
-                  new TableCell({ borders, width: { size: 1800, type: WidthType.DXA }, shading: { fill: bg, type: ShadingType.CLEAR }, margins: { top: 80, bottom: 80, left: 120, right: 120 }, children: [new Paragraph({ children: [new TextRun({ text: deadline, size: 18, font: 'Arial', color: GREY_COLOR, italics: true })] })] }),
-                  new TableCell({ borders, width: { size: 1760, type: WidthType.DXA }, shading: { fill: bg, type: ShadingType.CLEAR }, margins: { top: 80, bottom: 80, left: 120, right: 120 }, children: [new Paragraph({ children: [new TextRun({ text: (item.status || 'pending').replace(/_/g, ' '), size: 18, font: 'Arial', bold: true, color: statusColor })] })] }),
-                ]
-              });
-            })
-          ]
-        });
+        return new Table({ width: { size: 9360, type: WidthType.DXA }, columnWidths: [3800, 2000, 1800, 1760], rows: [new TableRow({ tableHeader: true, children: ['Task', 'Assigned To', 'Deadline', 'Status'].map(h => new TableCell({ borders, shading: { fill: '3D3A6E', type: ShadingType.CLEAR }, margins: { top: 80, bottom: 80, left: 120, right: 120 }, children: [new Paragraph({ children: [new TextRun({ text: h, bold: true, color: 'FFFFFF', size: 18, font: 'Arial' })] })] })) }), ...items.map((item, i) => { const owner = item.owner ? `${item.owner.firstName || ''} ${item.owner.lastName || ''}`.trim() : 'Unassigned'; const deadline = item.deadline ? format(new Date(item.deadline), 'MMM d, yyyy') : '—'; const statusColor = item.status === 'completed' ? '2E7D32' : item.status === 'in_progress' ? '1565C0' : 'E65100'; const bg = i % 2 === 0 ? 'FFFFFF' : 'F5F4FF'; return new TableRow({ children: [new TableCell({ borders, width: { size: 3800, type: WidthType.DXA }, shading: { fill: bg, type: ShadingType.CLEAR }, margins: { top: 80, bottom: 80, left: 120, right: 120 }, children: [new Paragraph({ children: [new TextRun({ text: item.task || '', size: 19, font: 'Arial', color: DARK_COLOR })] })] }), new TableCell({ borders, width: { size: 2000, type: WidthType.DXA }, shading: { fill: bg, type: ShadingType.CLEAR }, margins: { top: 80, bottom: 80, left: 120, right: 120 }, children: [new Paragraph({ children: [new TextRun({ text: owner, size: 18, font: 'Arial', color: DARK_COLOR })] })] }), new TableCell({ borders, width: { size: 1800, type: WidthType.DXA }, shading: { fill: bg, type: ShadingType.CLEAR }, margins: { top: 80, bottom: 80, left: 120, right: 120 }, children: [new Paragraph({ children: [new TextRun({ text: deadline, size: 18, font: 'Arial', color: GREY_COLOR, italics: true })] })] }), new TableCell({ borders, width: { size: 1760, type: WidthType.DXA }, shading: { fill: bg, type: ShadingType.CLEAR }, margins: { top: 80, bottom: 80, left: 120, right: 120 }, children: [new Paragraph({ children: [new TextRun({ text: (item.status || 'pending').replace(/_/g, ' '), size: 18, font: 'Arial', bold: true, color: statusColor })] })] })] }); })] });
       };
-
       const children = [
-        new Paragraph({
-          spacing: { before: 0, after: 160 },
-          shading: { fill: DARK_COLOR, type: ShadingType.CLEAR },
-          children: [new TextRun({ text: meeting.name || 'Meeting Report', bold: true, size: 44, color: 'FFFFFF', font: 'Arial' })]
-        }),
-        new Paragraph({
-          spacing: { before: 0, after: 320 },
-          children: [new TextRun({ text: `${s.meetingDate}  •  ${meeting.domain || ''}  •  ${s.duration}`, size: 20, color: GREY_COLOR, font: 'Arial', italics: true })]
-        }),
+        new Paragraph({ spacing: { before: 0, after: 160 }, shading: { fill: DARK_COLOR, type: ShadingType.CLEAR }, children: [new TextRun({ text: meeting.name || 'Meeting Report', bold: true, size: 44, color: 'FFFFFF', font: 'Arial' })] }),
+        new Paragraph({ spacing: { before: 0, after: 320 }, children: [new TextRun({ text: `${s.meetingDate}  •  ${meeting.domain || ''}  •  ${s.duration}`, size: 20, color: GREY_COLOR, font: 'Arial', italics: true })] }),
         sectionHeading('📋  Meeting Details'),
         new Paragraph({ spacing: { before: 100, after: 100 } }),
-        infoTable([
-          ['Title', meeting.name || ''],
-          ['Date', s.meetingDate],
-          ['Duration', s.duration],
-          ['Type / Domain', meeting.domain || ''],
-          ['Status', (meeting.status || '').toUpperCase()],
-          ['Attendees', s.attendeeNames],
-        ]),
+        infoTable([['Title', meeting.name || ''], ['Date', s.meetingDate], ['Duration', s.duration], ['Type / Domain', meeting.domain || ''], ['Status', (meeting.status || '').toUpperCase()], ['Attendees', s.attendeeNames]]),
         new Paragraph({ spacing: { before: 200, after: 0 } }),
         sectionHeading('📝  Summary'),
         bodyPara(meeting.summary || 'No summary available.', { italic: !meeting.summary, muted: !meeting.summary }),
       ];
-
-      if (meeting.conclusions?.length > 0) {
-        children.push(sectionHeading('💡  Key Conclusions'));
-        meeting.conclusions.forEach((c, i) => children.push(numberedItem(c, i + 1)));
-      }
-
-      if (meeting.decisions?.length > 0) {
-        children.push(sectionHeading('⚖️  Decisions'));
-        meeting.decisions.forEach((d, i) => children.push(numberedItem(d, i + 1)));
-      }
-
+      if (meeting.conclusions?.length > 0) { children.push(sectionHeading('💡  Key Conclusions')); meeting.conclusions.forEach((c, i) => children.push(numberedItem(c, i + 1))); }
+      if (meeting.decisions?.length > 0) { children.push(sectionHeading('⚖️  Decisions')); meeting.decisions.forEach((d, i) => children.push(numberedItem(d, i + 1))); }
       children.push(sectionHeading('✅  Action Items'));
       children.push(new Paragraph({ spacing: { before: 100, after: 100 } }));
       children.push(actionTable(meeting.actionItems));
       children.push(new Paragraph({ spacing: { before: 200, after: 0 } }));
-
-      if (meeting.followUpTopics?.length > 0) {
-        children.push(sectionHeading('🔁  Follow-up Topics'));
-        meeting.followUpTopics.forEach((f, i) => children.push(numberedItem(f, i + 1)));
-      }
-
+      if (meeting.followUpTopics?.length > 0) { children.push(sectionHeading('🔁  Follow-up Topics')); meeting.followUpTopics.forEach((f, i) => children.push(numberedItem(f, i + 1))); }
       if (meeting.attendeeContributions?.length > 0) {
         children.push(sectionHeading('👥  Attendee Contributions'));
         children.push(new Paragraph({ spacing: { before: 100, after: 100 } }));
-        children.push(new Table({
-          width: { size: 9360, type: WidthType.DXA },
-          columnWidths: [2800, 1200, 5360],
-          rows: [
-            new TableRow({
-              tableHeader: true,
-              children: ['Attendee', 'Score', 'Key Points'].map(h =>
-                new TableCell({
-                  borders,
-                  shading: { fill: '3D3A6E', type: ShadingType.CLEAR },
-                  margins: { top: 80, bottom: 80, left: 120, right: 120 },
-                  children: [new Paragraph({ children: [new TextRun({ text: h, bold: true, color: 'FFFFFF', size: 18, font: 'Arial' })] })]
-                })
-              )
-            }),
-            ...meeting.attendeeContributions.map((c, i) => {
-              const score = c.contributionScore ?? c.score ?? 0;
-              const kp = Array.isArray(c.keyPoints) ? c.keyPoints.join('; ') : (c.keyPoints || '—');
-              const scoreColor = score >= 8 ? '2E7D32' : score >= 5 ? 'E65100' : 'B71C1C';
-              const bg = i % 2 === 0 ? 'FFFFFF' : 'F5F4FF';
-              const name = getContributionName(c);
-              return new TableRow({
-                children: [
-                  new TableCell({ borders, width: { size: 2800, type: WidthType.DXA }, shading: { fill: bg, type: ShadingType.CLEAR }, margins: { top: 80, bottom: 80, left: 120, right: 120 }, children: [new Paragraph({ children: [new TextRun({ text: name, size: 19, bold: true, font: 'Arial', color: DARK_COLOR })] })] }),
-                  new TableCell({ borders, width: { size: 1200, type: WidthType.DXA }, shading: { fill: bg, type: ShadingType.CLEAR }, margins: { top: 80, bottom: 80, left: 120, right: 120 }, verticalAlign: VerticalAlign.CENTER, children: [new Paragraph({ alignment: AlignmentType.CENTER, children: [new TextRun({ text: `${score}/10`, size: 22, bold: true, font: 'Arial', color: scoreColor })] })] }),
-                  new TableCell({ borders, width: { size: 5360, type: WidthType.DXA }, shading: { fill: bg, type: ShadingType.CLEAR }, margins: { top: 80, bottom: 80, left: 120, right: 120 }, children: [new Paragraph({ children: [new TextRun({ text: kp, size: 18, font: 'Arial', color: GREY_COLOR })] })] }),
-                ]
-              });
-            })
-          ]
-        }));
+        children.push(new Table({ width: { size: 9360, type: WidthType.DXA }, columnWidths: [2800, 1200, 5360], rows: [new TableRow({ tableHeader: true, children: ['Attendee', 'Score', 'Key Points'].map(h => new TableCell({ borders, shading: { fill: '3D3A6E', type: ShadingType.CLEAR }, margins: { top: 80, bottom: 80, left: 120, right: 120 }, children: [new Paragraph({ children: [new TextRun({ text: h, bold: true, color: 'FFFFFF', size: 18, font: 'Arial' })] })] })) }), ...meeting.attendeeContributions.map((c, i) => { const score = c.contributionScore ?? c.score ?? 0; const kp = Array.isArray(c.keyPoints) ? c.keyPoints.join('; ') : (c.keyPoints || '—'); const scoreColor = score >= 8 ? '2E7D32' : score >= 5 ? 'E65100' : 'B71C1C'; const bg = i % 2 === 0 ? 'FFFFFF' : 'F5F4FF'; const name = getContributionName(c); return new TableRow({ children: [new TableCell({ borders, width: { size: 2800, type: WidthType.DXA }, shading: { fill: bg, type: ShadingType.CLEAR }, margins: { top: 80, bottom: 80, left: 120, right: 120 }, children: [new Paragraph({ children: [new TextRun({ text: name, size: 19, bold: true, font: 'Arial', color: DARK_COLOR })] })] }), new TableCell({ borders, width: { size: 1200, type: WidthType.DXA }, shading: { fill: bg, type: ShadingType.CLEAR }, margins: { top: 80, bottom: 80, left: 120, right: 120 }, verticalAlign: VerticalAlign.CENTER, children: [new Paragraph({ alignment: AlignmentType.CENTER, children: [new TextRun({ text: `${score}/10`, size: 22, bold: true, font: 'Arial', color: scoreColor })] })] }), new TableCell({ borders, width: { size: 5360, type: WidthType.DXA }, shading: { fill: bg, type: ShadingType.CLEAR }, margins: { top: 80, bottom: 80, left: 120, right: 120 }, children: [new Paragraph({ children: [new TextRun({ text: kp, size: 18, font: 'Arial', color: GREY_COLOR })] })] })] }); })] }));
         children.push(new Paragraph({ spacing: { before: 200, after: 0 } }));
       }
-
       children.push(sectionHeading('🎙️  Transcript'));
       if (transcriptSegments.length > 0) {
         transcriptSegments.forEach(seg => {
-          children.push(new Paragraph({
-            spacing: { before: 80, after: 40 },
-            children: [
-              new TextRun({ text: `${seg.speaker}  `, bold: true, color: ACCENT_COLOR, size: 19, font: 'Arial' }),
-              new TextRun({ text: `[${formatTime(seg.startTime)}]`, color: GREY_COLOR, size: 17, font: 'Arial' }),
-            ]
-          }));
-          children.push(new Paragraph({
-            spacing: { before: 0, after: 100 },
-            indent: { left: 240 },
-            children: [new TextRun({ text: seg.text || '', size: 19, font: 'Arial', color: DARK_COLOR })]
-          }));
+          children.push(new Paragraph({ spacing: { before: 80, after: 40 }, children: [new TextRun({ text: `${seg.speaker}  `, bold: true, color: ACCENT_COLOR, size: 19, font: 'Arial' }), new TextRun({ text: `[${formatTime(seg.startTime)}]`, color: GREY_COLOR, size: 17, font: 'Arial' })] }));
+          children.push(new Paragraph({ spacing: { before: 0, after: 100 }, indent: { left: 240 }, children: [new TextRun({ text: seg.text || '', size: 19, font: 'Arial', color: DARK_COLOR })] }));
         });
       } else if (meeting.transcriptRaw) {
         children.push(bodyPara(meeting.transcriptRaw));
-      } else {
-        children.push(bodyPara('No transcript available.', { muted: true, italic: true }));
-      }
-
-      const doc = new Document({
-        styles: { default: { document: { run: { font: 'Arial', size: 20 } } } },
-        sections: [{
-          properties: {
-            page: {
-              size: { width: 12240, height: 15840 },
-              margin: { top: 1080, right: 1080, bottom: 1080, left: 1080 },
-            }
-          },
-          headers: {
-            default: new Header({
-              children: [new Paragraph({
-                border: { bottom: { style: BorderStyle.SINGLE, size: 6, color: ACCENT_COLOR, space: 4 } },
-                spacing: { after: 0 },
-                children: [
-                  new TextRun({ text: 'OrgOS  •  Meeting Report', bold: true, color: ACCENT_COLOR, size: 18, font: 'Arial' }),
-                  new TextRun({ text: `  |  ${meeting.name || ''}`, color: GREY_COLOR, size: 18, font: 'Arial' }),
-                ]
-              })]
-            })
-          },
-          footers: {
-            default: new Footer({
-              children: [new Paragraph({
-                border: { top: { style: BorderStyle.SINGLE, size: 4, color: 'D0D0E8', space: 4 } },
-                spacing: { before: 0 },
-                children: [new TextRun({ text: 'Generated by OrgOS  •  AI-Powered Organization Operating System', color: GREY_COLOR, size: 16, font: 'Arial' })]
-              })]
-            })
-          },
-          children,
-        }]
-      });
-
+      } else { children.push(bodyPara('No transcript available.', { muted: true, italic: true })); }
+      const doc = new Document({ styles: { default: { document: { run: { font: 'Arial', size: 20 } } } }, sections: [{ properties: { page: { size: { width: 12240, height: 15840 }, margin: { top: 1080, right: 1080, bottom: 1080, left: 1080 } } }, headers: { default: new Header({ children: [new Paragraph({ border: { bottom: { style: BorderStyle.SINGLE, size: 6, color: ACCENT_COLOR, space: 4 } }, spacing: { after: 0 }, children: [new TextRun({ text: 'OrgOS  •  Meeting Report', bold: true, color: ACCENT_COLOR, size: 18, font: 'Arial' }), new TextRun({ text: `  |  ${meeting.name || ''}`, color: GREY_COLOR, size: 18, font: 'Arial' })] })] }) }, footers: { default: new Footer({ children: [new Paragraph({ border: { top: { style: BorderStyle.SINGLE, size: 4, color: 'D0D0E8', space: 4 } }, spacing: { before: 0 }, children: [new TextRun({ text: 'Generated by OrgOS  •  AI-Powered Organization Operating System', color: GREY_COLOR, size: 16, font: 'Arial' })] })] }) }, children }] });
       const blob = await Packer.toBlob(doc);
       const url = URL.createObjectURL(blob);
       const link = document.createElement('a');
       const safeName = (meeting.name || 'meeting').replace(/[^a-z0-9]/gi, '_').toLowerCase();
-      link.href = url;
-      link.download = `${safeName}_report.docx`;
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-      URL.revokeObjectURL(url);
-
-      toast.dismiss(loadingToast);
-      toast.success('DOCX exported!');
+      link.href = url; link.download = `${safeName}_report.docx`;
+      document.body.appendChild(link); link.click(); document.body.removeChild(link); URL.revokeObjectURL(url);
+      toast.dismiss(loadingToast); toast.success('DOCX exported!');
     } catch (err) {
-      console.error('DOCX export failed:', err);
-      toast.dismiss(loadingToast);
-      toast.error('DOCX export failed. Please try again.');
+      console.error('DOCX export failed:', err); toast.dismiss(loadingToast); toast.error('DOCX export failed. Please try again.');
     }
   };
 
@@ -707,9 +381,7 @@ export default function MeetingDetailPage({ params }) {
       <DashboardLayout>
         <div className="space-y-6">
           <div className="flex items-center gap-4">
-            <Button variant="ghost" size="icon" onClick={() => router.push('/meetings/history')}>
-              <ArrowLeft className="h-5 w-5" />
-            </Button>
+            <Button variant="ghost" size="icon" onClick={() => router.push('/meetings/history')}><ArrowLeft className="h-5 w-5" /></Button>
             <CardSkeleton className="flex-1" />
           </div>
           <CardSkeleton />
@@ -724,9 +396,7 @@ export default function MeetingDetailPage({ params }) {
         <div className="text-center py-12">
           <AlertCircle className="h-12 w-12 mx-auto mb-4 text-slate-500" />
           <p className="text-muted-foreground">Meeting not found</p>
-          <Button className="mt-4" onClick={() => router.push('/meetings/history')}>
-            Back to Meetings
-          </Button>
+          <Button className="mt-4" onClick={() => router.push('/meetings/history')}>Back to Meetings</Button>
         </div>
       </DashboardLayout>
     );
@@ -736,22 +406,13 @@ export default function MeetingDetailPage({ params }) {
     <DashboardLayout>
       <div className="space-y-6">
 
-        {/* FIX: End Meeting confirmation modal — no confirm() dialog */}
         {showEndConfirm && (
-          <div style={{
-            position: 'fixed', inset: 0, zIndex: 50,
-            background: 'rgba(0,0,0,0.6)',
-            display: 'flex', alignItems: 'center', justifyContent: 'center'
-          }}>
+          <div style={{ position: 'fixed', inset: 0, zIndex: 50, background: 'rgba(0,0,0,0.6)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
             <div className="bg-slate-900 border border-slate-700 rounded-xl p-6 w-full max-w-sm mx-4">
               <h2 className="text-lg font-semibold mb-2 text-white">End this meeting?</h2>
-              <p className="text-slate-400 text-sm mb-6">
-                This will end the meeting for all participants and cannot be undone.
-              </p>
+              <p className="text-slate-400 text-sm mb-6">This will end the meeting for all participants and cannot be undone.</p>
               <div className="flex gap-3 justify-end">
-                <Button variant="outline" onClick={() => setShowEndConfirm(false)} className="border-slate-700">
-                  Cancel
-                </Button>
+                <Button variant="outline" onClick={() => setShowEndConfirm(false)} className="border-slate-700">Cancel</Button>
                 <Button onClick={handleEndMeeting} disabled={isEnding} className="bg-red-600 hover:bg-red-700">
                   {isEnding && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
                   Yes, end meeting
@@ -770,9 +431,7 @@ export default function MeetingDetailPage({ params }) {
 
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
           <div className="flex items-center gap-4">
-            <Button variant="ghost" size="icon" onClick={() => router.push('/meetings/history')}>
-              <ArrowLeft className="h-5 w-5" />
-            </Button>
+            <Button variant="ghost" size="icon" onClick={() => router.push('/meetings/history')}><ArrowLeft className="h-5 w-5" /></Button>
             <div>
               <div className="flex items-center gap-3">
                 <h1 className="text-2xl font-bold">{meeting.name}</h1>
@@ -781,33 +440,11 @@ export default function MeetingDetailPage({ params }) {
               <p className="text-muted-foreground">{meeting.description}</p>
             </div>
           </div>
-
           <div className="flex gap-2 flex-wrap">
-            {isReady && (
-              <Button variant="outline" onClick={handleExportPDF} className="border-slate-700">
-                <Download className="mr-2 h-4 w-4" />
-                Export PDF
-              </Button>
-            )}
-            {isReady && (
-              <Button variant="outline" onClick={handleExportDOCX} className="border-slate-700">
-                <FileDown className="mr-2 h-4 w-4" />
-                Export DOCX
-              </Button>
-            )}
-            {meeting.status === 'scheduled' && (
-              <Button onClick={() => router.push(`/meetings/${meeting._id}/room`)} className="bg-green-600 hover:bg-green-700">
-                <Mic className="mr-2 h-4 w-4" />
-                Join Meeting
-              </Button>
-            )}
-            {meeting.status === 'live' && (
-              <Button onClick={() => router.push(`/meetings/${meeting._id}/room`)} className="bg-green-600 hover:bg-green-700">
-                <Mic className="mr-2 h-4 w-4" />
-                Rejoin Meeting
-              </Button>
-            )}
-            {/* FIX: End Meeting button now opens modal, works outside room too */}
+            {isReady && (<Button variant="outline" onClick={handleExportPDF} className="border-slate-700"><Download className="mr-2 h-4 w-4" />Export PDF</Button>)}
+            {isReady && (<Button variant="outline" onClick={handleExportDOCX} className="border-slate-700"><FileDown className="mr-2 h-4 w-4" />Export DOCX</Button>)}
+            {meeting.status === 'scheduled' && (<Button onClick={() => router.push(`/meetings/${meeting._id}/room`)} className="bg-green-600 hover:bg-green-700"><Mic className="mr-2 h-4 w-4" />Join Meeting</Button>)}
+            {meeting.status === 'live' && (<Button onClick={() => router.push(`/meetings/${meeting._id}/room`)} className="bg-green-600 hover:bg-green-700"><Mic className="mr-2 h-4 w-4" />Rejoin Meeting</Button>)}
             {(meeting.status === 'live' || meeting.status === 'scheduled') && isHost && (
               <Button onClick={() => setShowEndConfirm(true)} disabled={isEnding} className="bg-red-600 hover:bg-red-700">
                 {isEnding ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <StopCircle className="mr-2 h-4 w-4" />}
@@ -815,17 +452,9 @@ export default function MeetingDetailPage({ params }) {
               </Button>
             )}
             {['ready', 'completed', 'processing'].includes(meeting.status) && (
-              <Button variant="outline" className="border-slate-700" onClick={() => setActiveTab('summary')}>
-                <FileText className="mr-2 h-4 w-4" />
-                View Summary
-              </Button>
+              <Button variant="outline" className="border-slate-700" onClick={() => setActiveTab('summary')}><FileText className="mr-2 h-4 w-4" />View Summary</Button>
             )}
-            {isReady && (
-              <Button onClick={() => router.push(`/meetings/${meeting._id}/schedule-followup`)} className="bg-blue-600 hover:bg-blue-700">
-                <Plus className="mr-2 h-4 w-4" />
-                Schedule Follow-up
-              </Button>
-            )}
+            {isReady && (<Button onClick={() => router.push(`/meetings/${meeting._id}/schedule-followup`)} className="bg-blue-600 hover:bg-blue-700"><Plus className="mr-2 h-4 w-4" />Schedule Follow-up</Button>)}
           </div>
         </div>
 
@@ -838,42 +467,10 @@ export default function MeetingDetailPage({ params }) {
         )}
 
         <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-          <Card className="bg-card border-muted">
-            <CardContent className="flex items-center gap-3 py-4">
-              <Calendar className="h-5 w-5 text-muted-foreground" />
-              <div>
-                <p className="text-sm text-slate-500">Date</p>
-                <p className="font-medium">{format(new Date(meeting.scheduledDate), 'MMM d, yyyy')}</p>
-              </div>
-            </CardContent>
-          </Card>
-          <Card className="bg-card border-muted">
-            <CardContent className="flex items-center gap-3 py-4">
-              <Clock className="h-5 w-5 text-muted-foreground" />
-              <div>
-                <p className="text-sm text-slate-500">Duration</p>
-                <p className="font-medium">{meeting.actualDuration || meeting.estimatedDuration || 0} min</p>
-              </div>
-            </CardContent>
-          </Card>
-          <Card className="bg-card border-muted">
-            <CardContent className="flex items-center gap-3 py-4">
-              <Users className="h-5 w-5 text-muted-foreground" />
-              <div>
-                <p className="text-sm text-slate-500">Attendees</p>
-                <p className="font-medium">{meeting.attendees?.length || 0}</p>
-              </div>
-            </CardContent>
-          </Card>
-          <Card className="bg-card border-muted">
-            <CardContent className="flex items-center gap-3 py-4">
-              <Mic className="h-5 w-5 text-muted-foreground" />
-              <div>
-                <p className="text-sm text-slate-500">Type</p>
-                <Badge className={getDomainColor(meeting.domain)}>{meeting.domain}</Badge>
-              </div>
-            </CardContent>
-          </Card>
+          <Card className="bg-card border-muted"><CardContent className="flex items-center gap-3 py-4"><Calendar className="h-5 w-5 text-muted-foreground" /><div><p className="text-sm text-slate-500">Date</p><p className="font-medium">{format(new Date(meeting.scheduledDate), 'MMM d, yyyy')}</p></div></CardContent></Card>
+          <Card className="bg-card border-muted"><CardContent className="flex items-center gap-3 py-4"><Clock className="h-5 w-5 text-muted-foreground" /><div><p className="text-sm text-slate-500">Duration</p><p className="font-medium">{meeting.actualDuration || meeting.estimatedDuration || 0} min</p></div></CardContent></Card>
+          <Card className="bg-card border-muted"><CardContent className="flex items-center gap-3 py-4"><Users className="h-5 w-5 text-muted-foreground" /><div><p className="text-sm text-slate-500">Attendees</p><p className="font-medium">{meeting.attendees?.length || 0}</p></div></CardContent></Card>
+          <Card className="bg-card border-muted"><CardContent className="flex items-center gap-3 py-4"><Mic className="h-5 w-5 text-muted-foreground" /><div><p className="text-sm text-slate-500">Type</p><Badge className={getDomainColor(meeting.domain)}>{meeting.domain}</Badge></div></CardContent></Card>
         </div>
 
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
@@ -888,39 +485,16 @@ export default function MeetingDetailPage({ params }) {
 
               <TabsContent value="summary">
                 <Card className="bg-card border-muted">
-                  <CardHeader>
-                    <CardTitle className="flex items-center gap-2">
-                      <FileText className="h-5 w-5" />
-                      Meeting Summary
-                    </CardTitle>
-                  </CardHeader>
+                  <CardHeader><CardTitle className="flex items-center gap-2"><FileText className="h-5 w-5" />Meeting Summary</CardTitle></CardHeader>
                   <CardContent className="space-y-4">
                     {meeting.summary ? (
                       <>
                         <p className="text-slate-300">{meeting.summary}</p>
-                        {meeting.conclusions?.length > 0 && (
-                          <div>
-                            <p className="font-medium mb-2">Key Conclusions:</p>
-                            <ul className="list-disc list-inside space-y-1 text-muted-foreground">
-                              {meeting.conclusions.map((c, i) => <li key={i}>{c}</li>)}
-                            </ul>
-                          </div>
-                        )}
-                        {meeting.decisions?.length > 0 && (
-                          <div>
-                            <p className="font-medium mb-2">Decisions:</p>
-                            <ul className="list-disc list-inside space-y-1 text-muted-foreground">
-                              {meeting.decisions.map((d, i) => <li key={i}>{d}</li>)}
-                            </ul>
-                          </div>
-                        )}
+                        {meeting.conclusions?.length > 0 && (<div><p className="font-medium mb-2">Key Conclusions:</p><ul className="list-disc list-inside space-y-1 text-muted-foreground">{meeting.conclusions.map((c, i) => <li key={i}>{c}</li>)}</ul></div>)}
+                        {meeting.decisions?.length > 0 && (<div><p className="font-medium mb-2">Decisions:</p><ul className="list-disc list-inside space-y-1 text-muted-foreground">{meeting.decisions.map((d, i) => <li key={i}>{d}</li>)}</ul></div>)}
                       </>
                     ) : (
-                      <p className="text-slate-500">
-                        {isProcessing ? 'Summary will be available after processing...'
-                          : meeting.status === 'cancelled' ? 'Meeting was cancelled — no summary available.'
-                            : 'No summary available'}
-                      </p>
+                      <p className="text-slate-500">{isProcessing ? 'Summary will be available after processing...' : meeting.status === 'cancelled' ? 'Meeting was cancelled — no summary available.' : 'No summary available'}</p>
                     )}
                   </CardContent>
                 </Card>
@@ -945,44 +519,64 @@ export default function MeetingDetailPage({ params }) {
                         <p className="text-xs text-slate-500 mb-3">AI has assigned speakers. Click any name to correct it.</p>
                         <ScrollArea className="h-[400px]">
                           <div className="space-y-3 pr-2">
-                            {transcriptSegments.map((seg, i) => (
-                              <div key={i} className="p-3 bg-muted/50 rounded-lg group">
-                                <div className="flex items-center gap-2 mb-1 flex-wrap">
-                                  {editingSegmentIdx === i ? (
-                                    <div className="flex items-center gap-1">
-                                      <select
-                                        autoFocus
-                                        defaultValue={seg.speaker}
-                                        onChange={(e) => handleSpeakerChange(i, e.target.value)}
-                                        className="text-sm bg-slate-700 border border-slate-600 rounded px-2 py-0.5 text-slate-200 focus:outline-none"
+                            {/* ── FIX: Group consecutive same-speaker segments into one dialogue box ── */}
+                            {(() => {
+                              const groups = [];
+                              transcriptSegments.forEach((seg, i) => {
+                                const prev = groups[groups.length - 1];
+                                if (prev && prev.speaker === seg.speaker) {
+                                  prev.texts.push({ text: seg.text, idx: i });
+                                } else {
+                                  groups.push({
+                                    speaker: seg.speaker,
+                                    startTime: seg.startTime,
+                                    firstIdx: i,
+                                    texts: [{ text: seg.text, idx: i }]
+                                  });
+                                }
+                              });
+                              return groups.map((group, gi) => (
+                                <div key={gi} className="p-3 bg-muted/50 rounded-lg group">
+                                  <div className="flex items-center gap-2 mb-1 flex-wrap">
+                                    {editingSegmentIdx === group.firstIdx ? (
+                                      <div className="flex items-center gap-1">
+                                        <select
+                                          autoFocus
+                                          defaultValue={group.speaker}
+                                          onChange={(e) => {
+                                            // Correct all segments in this group at once
+                                            group.texts.forEach(t => handleSpeakerChange(t.idx, e.target.value));
+                                          }}
+                                          className="text-sm bg-slate-700 border border-slate-600 rounded px-2 py-0.5 text-slate-200 focus:outline-none"
+                                        >
+                                          {attendeeNameList.map(name => (
+                                            <option key={name} value={name}>{name}</option>
+                                          ))}
+                                          <option value="Unknown Speaker">Unknown Speaker</option>
+                                        </select>
+                                        <button onClick={() => setEditingSegmentIdx(null)} className="text-slate-400 hover:text-slate-200 ml-1">
+                                          <X className="h-3 w-3" />
+                                        </button>
+                                      </div>
+                                    ) : (
+                                      <button
+                                        onClick={() => setEditingSegmentIdx(group.firstIdx)}
+                                        className={`flex items-center gap-1 font-medium text-sm hover:opacity-80 ${speakerColorMap[group.speaker] || 'text-slate-400'}`}
+                                        title="Click to correct speaker"
                                       >
-                                        {attendeeNameList.map(name => (
-                                          <option key={name} value={name}>{name}</option>
-                                        ))}
-                                        <option value="Unknown Speaker">Unknown Speaker</option>
-                                      </select>
-                                      <button onClick={() => setEditingSegmentIdx(null)} className="text-slate-400 hover:text-slate-200 ml-1">
-                                        <X className="h-3 w-3" />
+                                        {group.speaker}
+                                        <Pencil className="h-3 w-3 opacity-0 group-hover:opacity-60 transition-opacity" />
                                       </button>
-                                    </div>
-                                  ) : (
-                                    <button
-                                      onClick={() => setEditingSegmentIdx(i)}
-                                      className={`flex items-center gap-1 font-medium text-sm hover:opacity-80 ${speakerColorMap[seg.speaker] || 'text-slate-400'}`}
-                                      title="Click to correct speaker"
-                                    >
-                                      {seg.speaker}
-                                      <Pencil className="h-3 w-3 opacity-0 group-hover:opacity-60 transition-opacity" />
-                                    </button>
-                                  )}
-                                  {/* FIX: Math.floor prevents 1:9.68 display */}
-                                  <span className="text-xs text-slate-500">
-                                    {formatTime(seg.startTime)}
-                                  </span>
+                                    )}
+                                    <span className="text-xs text-slate-500">{formatTime(group.startTime)}</span>
+                                  </div>
+                                  {/* All sentences joined — one readable paragraph per speaker turn */}
+                                  <p className="text-slate-300 text-sm leading-relaxed">
+                                    {group.texts.map(t => t.text).join(' ')}
+                                  </p>
                                 </div>
-                                <p className="text-slate-300 text-sm">{seg.text}</p>
-                              </div>
-                            ))}
+                              ));
+                            })()}
                           </div>
                         </ScrollArea>
                       </div>
@@ -994,9 +588,7 @@ export default function MeetingDetailPage({ params }) {
                         </div>
                       </ScrollArea>
                     ) : (
-                      <p className="text-slate-500">
-                        {isProcessing ? 'Transcript will be available after processing...' : 'No transcript available'}
-                      </p>
+                      <p className="text-slate-500">{isProcessing ? 'Transcript will be available after processing...' : 'No transcript available'}</p>
                     )}
                   </CardContent>
                 </Card>
@@ -1008,11 +600,7 @@ export default function MeetingDetailPage({ params }) {
                   <CardContent>
                     <div className="space-y-4">
                       {meeting.attendees?.map((attendee) => (
-                        <AttendeeContributionCard
-                          key={attendee.user?._id || attendee._id}
-                          attendee={attendee}
-                          contributions={meeting.attendeeContributions}
-                        />
+                        <AttendeeContributionCard key={attendee.user?._id || attendee._id} attendee={attendee} contributions={meeting.attendeeContributions} />
                       ))}
                     </div>
                   </CardContent>
@@ -1021,12 +609,7 @@ export default function MeetingDetailPage({ params }) {
 
               <TabsContent value="action-items">
                 <Card className="bg-card border-muted">
-                  <CardHeader>
-                    <CardTitle className="flex items-center gap-2">
-                      <CheckSquare className="h-5 w-5" />
-                      Action Items
-                    </CardTitle>
-                  </CardHeader>
+                  <CardHeader><CardTitle className="flex items-center gap-2"><CheckSquare className="h-5 w-5" />Action Items</CardTitle></CardHeader>
                   <CardContent>
                     {meeting.actionItems?.length > 0 ? (
                       <div className="space-y-3">
@@ -1042,11 +625,7 @@ export default function MeetingDetailPage({ params }) {
                               {item.owner && <p className="text-sm text-muted-foreground">Assigned to: {item.owner.firstName} {item.owner.lastName}</p>}
                               {item.deadline && <p className="text-sm text-muted-foreground">Due: {format(new Date(item.deadline), 'MMM d, yyyy')}</p>}
                             </div>
-                            <Badge className={
-                              item.status === 'completed' ? 'bg-green-500/20 text-green-400' :
-                                item.status === 'in_progress' ? 'bg-blue-500/20 text-blue-400' :
-                                  'bg-yellow-500/20 text-yellow-400'
-                            }>
+                            <Badge className={item.status === 'completed' ? 'bg-green-500/20 text-green-400' : item.status === 'in_progress' ? 'bg-blue-500/20 text-blue-400' : 'bg-yellow-500/20 text-yellow-400'}>
                               {item.status}
                             </Badge>
                           </div>

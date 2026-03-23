@@ -130,8 +130,8 @@ export default function MeetingRoom({ meetingId, user }) {
       recorder.ondataavailable = e => {
         if (e.data.size > 0) myChunksRef.current.push(e.data);
       };
-
-      // Every 30 seconds, send the accumulated chunk to the server
+ 
+      // Every 10 seconds, send the accumulated chunk to the server
       chunkIntervalRef.current = setInterval(() => {
         if (myChunksRef.current.length === 0) return;
         const blob = new Blob([...myChunksRef.current], { type: mimeType });
@@ -146,8 +146,14 @@ export default function MeetingRoom({ meetingId, user }) {
           }
         }).catch(e => console.warn('Chunk send failed:', e));
       }, 10000);
-
-      recorder.start(1000);
+ 
+      // FIX: Use 100ms timeslice so audio is captured immediately from the
+      // very first word — previously 1000ms meant up to 1 second of speech
+      // could be lost before the first chunk was written to the buffer.
+      // requestData() after start() flushes any audio already in the buffer
+      // at the moment recording begins (handles Safari/Firefox quirks).
+      recorder.start(100);
+      setTimeout(() => recorder.requestData(), 200);
       myRecorderRef.current = recorder;
       setIsMyRecording(true);
     } catch (e) {
