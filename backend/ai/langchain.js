@@ -149,10 +149,15 @@ Be concise and professional.`],
 
     const chain = prompt.pipe(llm).pipe(new StringOutputParser());
 
+    // ✅ FIX: Removed .replace(/\{/g, '{{').replace(/\}/g, '}}') from transcript content.
+    // Those replacements corrupted any JSON objects, code snippets, or curly-brace text
+    // in transcripts (e.g. "{action: deploy}" became "{{action: deploy}}").
+    // LangChain handles variable substitution safely via invoke() — the transcript value
+    // is passed as a named variable, NOT interpolated into a template string, so no
+    // escaping of braces is needed or wanted.
     return await chain.invoke({
-      transcript: transcript
-        .substring(0, 10000)
-        .replace(/\{/g, '{{')        .replace(/\}/g, '}}')    });
+      transcript: transcript.substring(0, 10000)
+    });
   } catch (error) {
     logger.error(`Error in transcript summarization: ${error.message}`);
     return 'Unable to generate summary.';
@@ -177,7 +182,6 @@ const scoreAttendeeChain = async (attendeeName, transcript, domain, transcriptSe
         ? ((attendeeSpeakingTime / totalSegments) * 100).toFixed(1)
         : '0';
 
-      // Filter out pure filler segments for quality assessment
       const substantiveSegments = attendeeSegments.filter(seg => {
         const text = seg.text.trim().toLowerCase();
         const fillerWords = ['okay', 'ok', 'yes', 'yeah', 'sure', 'hmm', 'start', 'hi', 'hello', 'bye', 'thanks', 'thank you', 'alright', 'right', 'good', 'great'];
@@ -244,15 +248,13 @@ SCORE 9-10 (Outstanding):
 - Took on action items voluntarily
 - Central to the outcome
 
-STRICT RULES — you must follow these exactly:
+STRICT RULES:
 1. If attendee has 0 segments or only said filler words → score MUST be 0-2, never 5
 2. Speaking a lot without substance scores LOWER than speaking little with high impact
-3. Blind optimism without data ("everything is great", "we are the best") = 1-3 points lower than honest analysis
-4. Raising real problems with evidence = higher score than denying problems exist
-5. The fallback score of 5 is FORBIDDEN when the person has no substantive lines
-6. A no-show gets 0, a silent attendee gets 1, a filler-only attendee gets 2
-7. Always reference specific things the person actually said in your reasoning
-8. Never give 5 as a default — every score must be justified by transcript evidence
+3. The fallback score of 5 is FORBIDDEN when the person has no substantive lines
+4. A no-show gets 0, a silent attendee gets 1, a filler-only attendee gets 2
+5. Always reference specific things the person actually said in your reasoning
+6. Never give 5 as a default — every score must be justified by transcript evidence
 
 Return ONLY valid JSON, no markdown, no explanation outside JSON:
 {"score": <number 0-10>, "keyPoints": ["<specific quote or action>", ...], "reasoning": "<2-3 sentences with transcript evidence>"}`],
@@ -263,7 +265,6 @@ Return ONLY valid JSON, no markdown, no explanation outside JSON:
     const jsonMatch = content.match(/\{[\s\S]*\}/);
     if (jsonMatch) {
       const parsed = JSON.parse(jsonMatch[0]);
-      // Enforce: if attendee had 0 segments, cap score at 2
       if (transcriptSegments) {
         const mySegments = transcriptSegments.filter(
           seg => seg.speaker && seg.speaker.toLowerCase() === attendeeName.toLowerCase()

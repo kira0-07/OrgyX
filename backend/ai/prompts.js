@@ -12,20 +12,11 @@ const logger = winston.createLogger({
   transports: [new winston.transports.Console()]
 });
 
-/**
- * RAG Q&A for meeting transcripts
- * @param {string} question - User's question
- * @param {string} meetingId - Meeting ID to query within
- * @returns {Promise<string>} - Answer with citations
- */
 async function ragMeetingQA(question, meetingId) {
   try {
     logger.info(`RAG query for meeting ${meetingId}: ${question}`);
 
-    // Generate embedding for the question
     const questionEmbedding = await generateEmbedding(question);
-
-    // Query ChromaDB for relevant chunks
     const collection = await chromaClient.getCollection({ name: 'meeting_transcripts' });
 
     const results = await collection.query({
@@ -41,7 +32,6 @@ async function ragMeetingQA(question, meetingId) {
       };
     }
 
-    // Build context from retrieved chunks
     const context = results.documents[0]
       .map((doc, idx) => {
         const metadata = results.metadatas[0][idx];
@@ -51,21 +41,16 @@ async function ragMeetingQA(question, meetingId) {
       })
       .join('\n\n');
 
-    // Create and run RAG chain
     const chain = await createRAGChain();
     const answer = await chain.invoke({ context, question });
 
-    // Build source citations
     const sources = results.documents[0].map((doc, idx) => ({
       text: doc,
       metadata: results.metadatas[0][idx],
       relevanceScore: results.distances ? 1 - results.distances[0][idx] : 0.5
     }));
 
-    return {
-      answer,
-      sources
-    };
+    return { answer, sources };
   } catch (error) {
     logger.error(`Error in RAG meeting QA: ${error.message}`);
     return {
@@ -76,19 +61,12 @@ async function ragMeetingQA(question, meetingId) {
   }
 }
 
-/**
- * Find similar meetings based on transcript content
- * @param {string} meetingId - Meeting ID to find similar meetings for
- * @param {number} limit - Number of similar meetings to return
- * @returns {Promise<Array>} - Array of similar meetings
- */
 async function findSimilarMeetings(meetingId, limit = 3) {
   try {
     logger.info(`Finding similar meetings to ${meetingId}`);
 
     const collection = await chromaClient.getCollection({ name: 'meeting_transcripts' });
 
-    // Get a sample of chunks from the current meeting
     const meetingChunks = await collection.get({
       where: { meetingId },
       limit: 10
@@ -98,18 +76,18 @@ async function findSimilarMeetings(meetingId, limit = 3) {
       return [];
     }
 
-    // Create a representative query by combining key chunks
     const representativeText = meetingChunks.documents.slice(0, 3).join(' ');
     const queryEmbedding = await generateEmbedding(representativeText);
 
-    // Query for similar chunks from other meetings
+    // ✅ FIX: Use direct $ne instead of $and wrapping a single condition.
+    // ChromaDB requires $and to have at least 2 conditions — a single-item
+    // $and silently ignores the filter, returning ALL meetings including the
+    // current one as "similar" to itself.
     const results = await collection.query({
       queryEmbeddings: [queryEmbedding],
       nResults: limit * 3,
       where: {
-        $and: [
-          { meetingId: { $ne: meetingId } }
-        ]
+        meetingId: { $ne: meetingId }
       }
     });
 
@@ -117,12 +95,10 @@ async function findSimilarMeetings(meetingId, limit = 3) {
       return [];
     }
 
-    // Group by meeting and calculate average similarity
     const meetingScores = {};
 
     results.metadatas[0].forEach((metadata, idx) => {
       if (!metadata) return;
-
       const otherMeetingId = metadata.meetingId;
       if (!otherMeetingId) return;
 
@@ -140,7 +116,6 @@ async function findSimilarMeetings(meetingId, limit = 3) {
       meetingScores[otherMeetingId].similarities.push(similarity);
     });
 
-    // Calculate average similarity and get top matches
     const scoredMeetings = Object.values(meetingScores)
       .map(m => ({
         ...m,
@@ -149,13 +124,11 @@ async function findSimilarMeetings(meetingId, limit = 3) {
       .sort((a, b) => b.averageSimilarity - a.averageSimilarity)
       .slice(0, limit);
 
-    // Fetch meeting details from MongoDB
     const { Meeting } = require('../models');
     const meetingDetails = await Meeting.find({
       _id: { $in: scoredMeetings.map(m => m.meetingId) }
     }).select('name domain scheduledDate summary');
 
-    // Merge details with scores
     return scoredMeetings.map(sm => {
       const details = meetingDetails.find(m => m._id.toString() === sm.meetingId);
       return {
@@ -173,33 +146,23 @@ async function findSimilarMeetings(meetingId, limit = 3) {
   }
 }
 
-/**
- * Query employee performance for similar trajectories
- * @param {string} userId - User ID
- * @param {Object} currentState - Current employee state
- * @returns {Promise<Array>} - Similar employees
- */
 async function findSimilarEmployees(userId, currentState) {
   try {
     logger.info(`Finding similar employees for user ${userId}`);
 
     const embedding = await generateEmbedding(currentState.summary);
-
     const collection = await chromaClient.getCollection({ name: 'employee_performance' });
 
+    // ✅ FIX: Same fix — direct $ne instead of invalid single-item $and
     const results = await collection.query({
       queryEmbeddings: [embedding],
       nResults: 5,
       where: {
-        $and: [
-          { userId: { $ne: userId } }
-        ]
+        userId: { $ne: userId }
       }
     });
 
-    if (!results.documents[0]) {
-      return [];
-    }
+    if (!results.documents[0]) return [];
 
     return results.documents[0].map((doc, idx) => ({
       summary: doc,

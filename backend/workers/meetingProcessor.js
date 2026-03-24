@@ -22,8 +22,46 @@ const logger = winston.createLogger({
 });
 
 const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
-
 const DIARIZATION_URL = process.env.DIARIZATION_URL || 'http://diarization:8001';
+
+// ─────────────────────────────────────────────────────────────────────────────
+// FIX 1: Hallucination filter
+// Whisper hallucinates these phrases on silent or very short audio segments.
+// We match the ENTIRE trimmed segment text — partial matches are NOT filtered
+// so real sentences that happen to contain "thank you" are preserved.
+// ─────────────────────────────────────────────────────────────────────────────
+const HALLUCINATION_PHRASES = new Set([
+  'thank you',
+  'thank you very much',
+  'thanks for watching',
+  'thanks for listening',
+  'please subscribe',
+  'see you next time',
+  'bye bye',
+  'goodbye',
+  'you',
+  'thanks',
+  'thank you for watching',
+  'thank you for listening',
+  'subtitles by',
+  'subscribe to',
+  'like and subscribe',
+  "i'll see you in the next one",
+  "don't forget to subscribe",
+]);
+
+function filterHallucination(text) {
+  if (!text || !text.trim()) return '';
+  // Strip trailing punctuation before matching
+  const trimmed = text.trim().toLowerCase().replace(/[.,!?]+$/, '');
+  if (HALLUCINATION_PHRASES.has(trimmed)) {
+    logger.warn(`Hallucination filtered: "${text.trim()}"`);
+    return '';
+  }
+  return text.trim();
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 
 async function updateStep(meetingId, step, status, message = null, io = null) {
   const meeting = await Meeting.findById(meetingId);
@@ -60,30 +98,56 @@ function getAudioDuration(filePath) {
   });
 }
 
-async function splitAudio(filePath, chunkDuration = 600) {
+// ─────────────────────────────────────────────────────────────────────────────
+// FIX 2: Overlap chunking — prevents word cutoff at chunk boundaries
+// Each chunk is 590s content + 10s overlap with the next chunk.
+// Advance by 590s only so the overlap region is re-transcribed in the next chunk.
+// ─────────────────────────────────────────────────────────────────────────────
+async function splitAudioWithOverlap(filePath, chunkDuration = 590, overlap = 10) {
   const outputDir = '/temp/chunks';
   if (!fs.existsSync(outputDir)) fs.mkdirSync(outputDir, { recursive: true });
+
+  const totalDuration = await getAudioDuration(filePath);
   const baseName = path.basename(filePath, path.extname(filePath));
-  const outputPattern = path.join(outputDir, `${baseName}_chunk_%03d.wav`);
-  return new Promise((resolve, reject) => {
-    ffmpeg(filePath)
-      .output(outputPattern)
-      .audioCodec('pcm_s16le')
-      .audioFrequency(16000)
-      .audioChannels(1)
-      .outputOptions([`-f segment`, `-segment_time ${chunkDuration}`, `-reset_timestamps 1`])
-      .on('end', () => {
-        const chunks = fs.readdirSync(outputDir)
-          .filter(f => f.startsWith(`${baseName}_chunk_`))
-          .map(f => path.join(outputDir, f))
-          .sort();
-        resolve(chunks);
-      })
-      .on('error', reject)
-      .run();
-  });
+  const chunkPaths = [];
+
+  let start = 0;
+  let index = 0;
+
+  while (start < totalDuration) {
+    const outputPath = path.join(
+      outputDir,
+      `${baseName}_chunk_${String(index).padStart(3, '0')}.wav`
+    );
+    const segmentLength = Math.min(chunkDuration + overlap, totalDuration - start);
+
+    await new Promise((resolve, reject) => {
+      ffmpeg(filePath)
+        .seekInput(start)
+        .duration(segmentLength)
+        .output(outputPath)
+        .audioCodec('pcm_s16le')
+        .audioFrequency(16000)
+        .audioChannels(1)
+        .on('end', resolve)
+        .on('error', reject)
+        .run();
+    });
+
+    chunkPaths.push({ path: outputPath, startTime: start });
+    start += chunkDuration;
+    index++;
+  }
+
+  logger.info(`Split into ${chunkPaths.length} overlapping chunks`);
+  return chunkPaths;
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// FIX 3: temperature: 0 makes Whisper output deterministic → fewer hallucinations
+// FIX 4: Every segment text is passed through filterHallucination() so
+//         junk phrases never enter the transcript at all
+// ─────────────────────────────────────────────────────────────────────────────
 async function transcribeWithGroq(audioPath) {
   try {
     logger.info(`Transcribing: ${audioPath}`);
@@ -93,7 +157,23 @@ async function transcribeWithGroq(audioPath) {
       model: 'whisper-large-v3',
       response_format: 'verbose_json',
       language: 'en',
+      temperature: 0,   // ✅ FIX: deterministic = fewer hallucinations
     });
+
+    // ✅ FIX: Filter each segment individually
+    if (transcription.segments) {
+      transcription.segments = transcription.segments
+        .map(seg => ({ ...seg, text: filterHallucination(seg.text) }))
+        .filter(seg => seg.text.length > 0);
+    }
+
+    // Rebuild top-level text from filtered segments
+    if (transcription.text) {
+      transcription.text = transcription.segments && transcription.segments.length > 0
+        ? transcription.segments.map(s => s.text).join(' ')
+        : filterHallucination(transcription.text);
+    }
+
     return transcription;
   } catch (error) {
     logger.error(`Groq transcription error: ${error.message}`);
@@ -136,7 +216,7 @@ async function diarizeWithPyannote(audioPath, numSpeakers) {
     }
 
     const result = await response.json();
-    logger.info(`Pyannote diarization complete: ${result.segments.length} segments, ${result.num_speakers_detected} speakers`);
+    logger.info(`Pyannote complete: ${result.segments.length} segments, ${result.num_speakers_detected} speakers`);
     return result.segments;
 
   } catch (error) {
@@ -168,9 +248,7 @@ function mergeTranscriptWithDiarization(groqSegments, diarSegments, attendeeName
     const diarSeg = diarSegments.find(d => d.start <= midpoint && midpoint <= d.end);
     const closestSeg = diarSeg || diarSegments.reduce((closest, d) => {
       if (!closest) return d;
-      const distCurrent = Math.abs(d.start - midpoint);
-      const distClosest = Math.abs(closest.start - midpoint);
-      return distCurrent < distClosest ? d : closest;
+      return Math.abs(d.start - midpoint) < Math.abs(closest.start - midpoint) ? d : closest;
     }, null);
 
     const speaker = closestSeg
@@ -206,7 +284,13 @@ function mergeShortSegments(segments, minDuration = 1.0) {
   return merged;
 }
 
-async function inferSpeakersWithLLM(segments, attendeeNames) {
+// ─────────────────────────────────────────────────────────────────────────────
+// FIX 5: Transcript ordering — LLM now receives the meeting host's name
+// so it knows who most likely opened the meeting and spoke first.
+// Without this, the LLM randomly assigns P2 to segment [0], making P2's
+// transcript appear before P1 even though P1 started the meeting.
+// ─────────────────────────────────────────────────────────────────────────────
+async function inferSpeakersWithLLM(segments, attendeeNames, hostName = null) {
   if (!segments || segments.length === 0) return [];
 
   if (attendeeNames.length === 1) {
@@ -218,20 +302,30 @@ async function inferSpeakersWithLLM(segments, attendeeNames) {
 
   for (let batchStart = 0; batchStart < segments.length; batchStart += batchSize) {
     const batch = segments.slice(batchStart, batchStart + batchSize);
+    const isFirstBatch = batchStart === 0;
 
     const segmentList = batch.map((seg, localIdx) =>
       `[${localIdx}] ${seg.text?.trim()}`
     ).join('\n');
 
-    const prompt = `You are analyzing a meeting transcript. The meeting has exactly these attendees (use ONLY these exact names, no titles or roles):
-${attendeeNames.map((n, i) => `- Speaker ${i + 1}: ${n}`).join('\n')}
+    // ✅ FIX: Provide host context so segment [0] is assigned correctly
+    const hostLine = hostName
+      ? `\nIMPORTANT: "${hostName}" is the meeting host. They almost certainly spoke first (segment [0]). Assign them to early segments unless the text clearly shows otherwise.\n`
+      : '';
 
+    const firstBatchNote = isFirstBatch
+      ? '\nNOTE: This is the very start of the meeting. The host typically opens with greetings or agenda.\n'
+      : '';
+
+    const prompt = `You are analyzing a meeting transcript. The meeting has exactly these attendees (use ONLY these exact names):
+${attendeeNames.map((n, i) => `- Speaker ${i + 1}: ${n}`).join('\n')}
+${hostLine}${firstBatchNote}
 Rules:
-1. Use ONLY the exact names listed above
+1. Use ONLY the exact names listed above — no titles, no roles
 2. Assign each segment to one speaker based on conversation flow and context
 3. Look for: questions followed by answers, topic handoffs, first-person references
 4. A speaker can have multiple consecutive segments
-5. If truly uncertain, assign to the speaker who spoke most recently
+5. The host typically opens and closes the meeting
 
 Segments to label:
 ${segmentList}
@@ -282,9 +376,10 @@ Return ONLY a valid JSON array (no markdown, no explanation):
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Per-device transcription pipeline
-// Each participant's audio is transcribed separately with their name already known
-// No pyannote needed — speaker attribution is 100% accurate
-// Segments are merged by timestamp to create a chronological transcript
+// Each participant's audio is transcribed separately — speaker attribution
+// is 100% accurate since we already know who each audio file belongs to.
+// FIX 6: Hallucination filter is applied inside transcribeWithGroq(),
+//         so segments that come out are already clean.
 // ─────────────────────────────────────────────────────────────────────────────
 async function processPerDeviceAudio(perDeviceAudio, meetingId) {
   logger.info(`Processing per-device audio for ${perDeviceAudio.length} participants`);
@@ -300,23 +395,20 @@ async function processPerDeviceAudio(perDeviceAudio, meetingId) {
 
     let localPath = null;
     try {
-      // Download this person's audio from S3
       localPath = await downloadAudio(audioKey);
 
-      // Check file is valid and has content
       const stat = fs.statSync(localPath);
       if (stat.size < 1000) {
         logger.warn(`Audio for ${userName} too small (${stat.size} bytes) — skipping`);
         continue;
       }
 
-      // Transcribe with Groq — speaker is already known, no diarization needed
+      // ✅ transcribeWithGroq already applies filterHallucination to each segment
       const result = await transcribeWithGroq(localPath);
       const segments = result?.segments || [];
 
       logger.info(`${userName}: ${segments.length} segments transcribed`);
 
-      // Tag each segment with this person's name and real timestamps
       for (const seg of segments) {
         const text = seg.text?.trim();
         if (!text || text.length < 2) continue;
@@ -329,7 +421,7 @@ async function processPerDeviceAudio(perDeviceAudio, meetingId) {
           start: seg.start || 0,
           end: seg.end || 0,
           userId,
-          source: 'per-device' // mark as per-device for debugging
+          source: 'per-device'
         });
       }
 
@@ -347,10 +439,10 @@ async function processPerDeviceAudio(perDeviceAudio, meetingId) {
     return null;
   }
 
-  // Sort all segments by start time to create chronological transcript
+  // ✅ Sort chronologically before dedup
   allSegments.sort((a, b) => a.startTime - b.startTime);
 
-  // Deduplication — remove hallucinated repeats within 15 seconds with 80% similarity
+  // Deduplication — remove hallucinated repeats within 15s with 80% text similarity
   const dedupedSegments = [];
   for (const seg of allSegments) {
     const isDuplicate = dedupedSegments.some(existing => {
@@ -364,7 +456,7 @@ async function processPerDeviceAudio(perDeviceAudio, meetingId) {
     if (!isDuplicate) dedupedSegments.push(seg);
   }
 
-  logger.info(`Per-device pipeline complete: ${dedupedSegments.length} segments from ${perDeviceAudio.length} participants`);
+  logger.info(`Per-device pipeline: ${dedupedSegments.length} segments from ${perDeviceAudio.length} participants`);
   return dedupedSegments;
 }
 
@@ -386,6 +478,16 @@ async function processMeeting(job) {
 
     if (!meeting) throw new Error('Meeting not found');
 
+    // ✅ FIX: Resolve host name so LLM diarization knows who opened the meeting
+    const hostAttendee = meeting.attendees.find(
+      a => a.user?._id?.toString() === meeting.host?.toString()
+    );
+    const hostName = hostAttendee?.user
+      ? `${hostAttendee.user.firstName} ${hostAttendee.user.lastName}`.trim()
+      : null;
+
+    logger.info(`Meeting host: ${hostName || 'unknown'}`);
+
     await updateStep(meetingId, 'upload', 'done', 'Audio received', io);
     await updateStep(meetingId, 'transcription', 'running', 'Starting transcription', io);
 
@@ -394,7 +496,6 @@ async function processMeeting(job) {
     let usedPerDevice = false;
 
     // ── PATH 1: Per-device audio (preferred) ─────────────────────────────────
-    // Each person's audio is transcribed separately — speaker attribution is perfect
     if (perDeviceAudio && perDeviceAudio.length > 0) {
       logger.info('Using per-device audio pipeline — no diarization needed');
       try {
@@ -413,44 +514,40 @@ async function processMeeting(job) {
     }
 
     // ── PATH 2: Mixed audio fallback ─────────────────────────────────────────
-    // Used when per-device audio is unavailable or failed
-    // Falls back to Groq transcription + pyannote/LLM diarization
     if (!usedPerDevice && audioKey) {
       logger.info('Using mixed audio pipeline with diarization');
 
       const localAudioPath = await downloadAudio(audioKey);
       const rawDuration = await getAudioDuration(localAudioPath);
       meeting.actualDuration = (rawDuration && !isNaN(rawDuration)) ? Math.round(rawDuration / 60) : 0;
-
       logger.info(`Audio duration: ${rawDuration}s`);
 
       let groqResult = null;
       const fileSizeMB = fs.statSync(localAudioPath).size / (1024 * 1024);
 
-      if (fileSizeMB > 24 || rawDuration > 600) {
-        logger.info('Large file — splitting into chunks');
-        const chunks = await splitAudio(localAudioPath);
-        let timeOffset = 0;
+      if (fileSizeMB > 24 || rawDuration > 590) {
+        // ✅ FIX: Overlap chunking replaces hard-cut splitAudio
+        logger.info('Large file — splitting into overlapping chunks');
+        const chunks = await splitAudioWithOverlap(localAudioPath);
         const allSegments = [];
 
         for (const chunk of chunks) {
-          const chunkResult = await transcribeWithGroq(chunk);
+          const chunkResult = await transcribeWithGroq(chunk.path); // ✅ already filtered
           transcript += (chunkResult?.text || '') + '\n';
           if (chunkResult?.segments) {
             chunkResult.segments.forEach(seg => {
               allSegments.push({
                 ...seg,
-                start: (seg.start || 0) + timeOffset,
-                end: (seg.end || 0) + timeOffset
+                start: (seg.start || 0) + chunk.startTime,
+                end: (seg.end || 0) + chunk.startTime
               });
             });
           }
-          timeOffset += 600;
-          try { fs.unlinkSync(chunk); } catch (e) {}
+          try { fs.unlinkSync(chunk.path); } catch (e) {}
         }
         groqResult = { text: transcript, segments: allSegments };
       } else {
-        groqResult = await transcribeWithGroq(localAudioPath);
+        groqResult = await transcribeWithGroq(localAudioPath); // ✅ already filtered
         transcript = groqResult?.text || '';
       }
 
@@ -458,7 +555,6 @@ async function processMeeting(job) {
       logger.info(`Transcription done. Text: ${transcript.length} chars, segments: ${groqResult?.segments?.length || 0}`);
       await updateStep(meetingId, 'transcription', 'done', 'Transcription complete', io);
 
-      // Diarization step for mixed audio
       await updateStep(meetingId, 'diarization', 'running', 'Identifying speakers', io);
 
       const joinedAttendees = meeting.attendees.filter(
@@ -466,11 +562,7 @@ async function processMeeting(job) {
       );
       const activeAttendees = joinedAttendees.length > 0 ? joinedAttendees : meeting.attendees;
       const attendeeNames = activeAttendees
-        .map(a => {
-          const first = (a.user?.firstName || '').trim();
-          const last = (a.user?.lastName || '').trim();
-          return `${first} ${last}`.trim();
-        })
+        .map(a => `${(a.user?.firstName || '').trim()} ${(a.user?.lastName || '').trim()}`.trim())
         .filter(name => name.length > 0);
 
       logger.info(`Attendees for diarization: ${attendeeNames.join(', ')}`);
@@ -494,7 +586,8 @@ async function processMeeting(job) {
       } else {
         logger.info('Pyannote unavailable — using LLM speaker inference fallback');
         const segmentsToLabel = rawDuration < 600 ? rawSegments : mergeShortSegments(rawSegments);
-        labeledSegments = await inferSpeakersWithLLM(segmentsToLabel, attendeeNames);
+        // ✅ FIX: Pass hostName to anchor first-speaker assignment
+        labeledSegments = await inferSpeakersWithLLM(segmentsToLabel, attendeeNames, hostName);
         meeting.speakerDiarizationMethod = 'llm';
       }
 
@@ -523,13 +616,18 @@ async function processMeeting(job) {
       try { fs.unlinkSync(localAudioPath); } catch (e) {}
     }
 
-    // Set final segments
+    // ✅ FIX: Always sort by startTime before saving
+    // Guarantees correct chronological order on the frontend regardless of
+    // which diarization method was used or how the LLM assigned speakers.
+    if (transcriptSegments && transcriptSegments.length > 0) {
+      transcriptSegments.sort((a, b) => (a.startTime || 0) - (b.startTime || 0));
+    }
+
     meeting.transcriptRaw = transcript || transcriptSegments?.map(s => `${s.speaker}: ${s.text}`).join('\n') || '';
     meeting.transcriptSegments = transcriptSegments || [];
     meeting.speakerDiarizationEditable = true;
 
     if (usedPerDevice) {
-      // Skip diarization step for per-device — already done
       await updateStep(meetingId, 'transcription', 'done', `Transcribed ${perDeviceAudio.length} participants`, io);
       await updateStep(meetingId, 'diarization', 'done', 'Speaker attribution via per-device audio — 100% accurate', io);
     } else {
@@ -729,7 +827,6 @@ const worker = new Worker('meeting-processing', processMeeting, {
 worker.on('completed', (job) => logger.info(`Job ${job.id} completed`));
 worker.on('failed', (job, err) => logger.error(`Job ${job.id} failed: ${err.message}`));
 
-// Keep HuggingFace Space warm — ping every 10 minutes
 const KEEP_ALIVE_INTERVAL = 10 * 60 * 1000;
 
 async function pingDiarizationService() {

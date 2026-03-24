@@ -26,16 +26,8 @@ async function getEmbedder() {
 async function generateEmbedding(text) {
   try {
     const embed = await getEmbedder();
-
-    // Truncate text if too long (model has 512 token limit)
     const truncatedText = text.length > 1000 ? text.substring(0, 1000) + '...' : text;
-
-    const output = await embed(truncatedText, {
-      pooling: 'mean',
-      normalize: true
-    });
-
-    // Convert to regular array
+    const output = await embed(truncatedText, { pooling: 'mean', normalize: true });
     return Array.from(output.data);
   } catch (error) {
     logger.error(`Error generating embedding: ${error.message}`);
@@ -47,16 +39,11 @@ async function generateEmbeddingsBatch(texts) {
   try {
     const embed = await getEmbedder();
     const embeddings = [];
-
     for (const text of texts) {
       const truncatedText = text.length > 1000 ? text.substring(0, 1000) + '...' : text;
-      const output = await embed(truncatedText, {
-        pooling: 'mean',
-        normalize: true
-      });
+      const output = await embed(truncatedText, { pooling: 'mean', normalize: true });
       embeddings.push(Array.from(output.data));
     }
-
     return embeddings;
   } catch (error) {
     logger.error(`Error generating batch embeddings: ${error.message}`);
@@ -64,7 +51,6 @@ async function generateEmbeddingsBatch(texts) {
   }
 }
 
-// Calculate cosine similarity between two embeddings
 function cosineSimilarity(embeddingA, embeddingB) {
   if (embeddingA.length !== embeddingB.length) {
     throw new Error('Embeddings must have the same dimension');
@@ -80,7 +66,13 @@ function cosineSimilarity(embeddingA, embeddingB) {
     normB += embeddingB[i] * embeddingB[i];
   }
 
-  return dotProduct / (Math.sqrt(normA) * Math.sqrt(normB));
+  // ✅ FIX: Guard against division by zero when either vector is all zeros.
+  // Previously returned NaN silently, corrupting all downstream similarity scores.
+  // Now returns 0 (no similarity) which is the correct mathematical answer.
+  const denominator = Math.sqrt(normA) * Math.sqrt(normB);
+  if (denominator === 0) return 0;
+
+  return dotProduct / denominator;
 }
 
 module.exports = {

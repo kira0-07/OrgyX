@@ -14,7 +14,6 @@ const logger = winston.createLogger({
   transports: [new winston.transports.Console()]
 });
 
-// Recommendation Graph State
 const recommendationState = {
   userId: null,
   user: null,
@@ -30,22 +29,16 @@ const recommendationState = {
   promotionPassOverCount: null
 };
 
-// Node 1: Fetch all employee data
 async function fetchData(state) {
   logger.info(`Fetching data for user ${state.userId}`);
 
   try {
     const user = await User.findById(state.userId);
-    if (!user) {
-      throw new Error('User not found');
-    }
+    if (!user) throw new Error('User not found');
 
     const performance = await Performance.findOne({ user: state.userId });
-    if (!performance) {
-      throw new Error('Performance record not found');
-    }
+    if (!performance) throw new Error('Performance record not found');
 
-    // Get last 30 days of attendance
     const thirtyDaysAgo = new Date();
     thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
 
@@ -54,21 +47,18 @@ async function fetchData(state) {
       date: { $gte: thirtyDaysAgo }
     }).sort({ date: -1 });
 
-    // Get meetings from last 30 days
     const meetingData = await Meeting.find({
       'attendees.user': state.userId,
       scheduledDate: { $gte: thirtyDaysAgo },
       status: 'ready'
     }).sort({ scheduledDate: -1 });
 
-    // Get task stats
     const Task = require('../models/Task');
     const taskData = await Task.find({
       assignee: state.userId,
       createdAt: { $gte: thirtyDaysAgo }
     });
 
-    // Get previous recommendations for promotion pass-over count
     const previousRecommendations = await Recommendation.find({
       user: state.userId,
       category: 'promote'
@@ -93,12 +83,10 @@ async function fetchData(state) {
   }
 }
 
-// Node 2: Query ChromaDB for similar employees
 async function queryChroma(state) {
   logger.info(`Querying ChromaDB for user ${state.userId}`);
 
   try {
-    // Create summary of current employee state
     const employeeSummary = `
       Role: ${state.user.role}
       Performance Score: ${state.performanceData.currentScore}
@@ -124,10 +112,7 @@ async function queryChroma(state) {
         similarity: results.distances ? 1 - results.distances[0][idx] : 0.5
       })) || [];
 
-      return {
-        ...state,
-        similarEmployees
-      };
+      return { ...state, similarEmployees };
     } catch (chromaError) {
       logger.warn(`ChromaDB query failed: ${chromaError.message}`);
       return { ...state, similarEmployees: [] };
@@ -138,7 +123,6 @@ async function queryChroma(state) {
   }
 }
 
-// Node 3: Calculate resignation risk score
 async function calculateRisk(state) {
   logger.info(`Calculating risk for user ${state.userId}`);
 
@@ -146,13 +130,11 @@ async function calculateRisk(state) {
     const performance = state.performanceData;
     const similarEmployees = state.similarEmployees || [];
 
-    // Get average pulse score
     const pulseScores = performance.pulseScores || [];
     const avgPulse = pulseScores.length > 0
       ? pulseScores.slice(0, 8).reduce((sum, p) => sum + p.score, 0) / Math.min(pulseScores.length, 8)
       : 3;
 
-    // Calculate components
     const pulseComponent = 1 - ((avgPulse - 1) / 4);
 
     let performanceComponent = 0.5;
@@ -169,7 +151,6 @@ async function calculateRisk(state) {
 
     const meetingComponent = 1 - ((performance.meetingStats?.avgContributionScore || 5) / 10);
 
-    // Similar at-risk employees
     let similarComponent = 0;
     if (similarEmployees.length > 0) {
       const atRiskSimilar = similarEmployees.filter(e =>
@@ -180,7 +161,6 @@ async function calculateRisk(state) {
       }
     }
 
-    // Weighted calculation
     const riskScore = (
       pulseComponent * 0.30 +
       performanceComponent * 0.20 +
@@ -200,7 +180,6 @@ async function calculateRisk(state) {
   }
 }
 
-// Node 4: Classify employee
 async function classifyEmployee(state) {
   logger.info(`Classifying user ${state.userId}`);
 
@@ -209,7 +188,6 @@ async function classifyEmployee(state) {
 
   let category = 'monitor';
 
-  // Classification logic
   if (currentScore >= 80 && trend === 'improving') {
     category = 'promote';
   } else if (currentScore >= 80 && trend === 'neutral') {
@@ -220,21 +198,12 @@ async function classifyEmployee(state) {
     category = 'at_risk';
   }
 
-  // Override conditions
-  if (consecutiveNeutralOrDecliningDays >= 14) {
-    category = 'at_risk';
-  }
-  if (riskScore >= 0.65) {
-    category = 'at_risk';
-  }
+  if (consecutiveNeutralOrDecliningDays >= 14) category = 'at_risk';
+  if (riskScore >= 0.65) category = 'at_risk';
 
-  return {
-    ...state,
-    category
-  };
+  return { ...state, category };
 }
 
-// Node 5: Generate reasoning
 async function generateReasoning(state) {
   logger.info(`Generating reasoning for user ${state.userId}`);
 
@@ -244,11 +213,7 @@ async function generateReasoning(state) {
       state.category,
       state.riskScore
     );
-
-    return {
-      ...state,
-      reasoning
-    };
+    return { ...state, reasoning };
   } catch (error) {
     logger.error(`Error generating reasoning: ${error.message}`);
     return {
@@ -258,81 +223,48 @@ async function generateReasoning(state) {
   }
 }
 
-// Node 6: Check promotion history
 async function checkPromotion(state) {
   logger.info(`Checking promotion history for user ${state.userId}`);
 
-  // Additional logic for promotion recommendations
   if (state.category === 'promote') {
-    // Check if they've been promoted before
     const promotionHistory = await Recommendation.find({
       user: state.userId,
       category: 'promote',
       status: 'acknowledged'
     }).countDocuments();
 
-    return {
-      ...state,
-      previousPromotions: promotionHistory
-    };
+    return { ...state, previousPromotions: promotionHistory };
   }
 
   return state;
 }
 
-// Node 7: Save recommendation
 async function saveResult(state) {
   logger.info(`Saving recommendation for user ${state.userId}`);
 
   try {
-    // Calculate risk factors
     const riskFactors = [
-      {
-        factor: 'Pulse Score Trend',
-        weight: 0.30,
-        value: state.riskScore * 0.30
-      },
-      {
-        factor: 'Performance Trend',
-        weight: 0.20,
-        value: state.performanceData.trend === 'declining' ? 1 : 0
-      },
-      {
-        factor: 'Promotion Pass-Over',
-        weight: 0.25,
-        value: Math.min(state.promotionPassOverCount / 4, 1)
-      },
-      {
-        factor: 'Tenure',
-        weight: 0.10,
-        value: state.riskScore * 0.10
-      },
-      {
-        factor: 'Meeting Engagement',
-        weight: 0.10,
-        value: 1 - (state.performanceData.meetingStats?.avgContributionScore / 10 || 0.5)
-      },
-      {
-        factor: 'Similar Employee Patterns',
-        weight: 0.05,
-        value: state.similarEmployees?.length > 0 ? state.similarEmployees[0].similarity : 0
-      }
+      { factor: 'Pulse Score Trend', weight: 0.30, value: state.riskScore * 0.30 },
+      { factor: 'Performance Trend', weight: 0.20, value: state.performanceData.trend === 'declining' ? 1 : 0 },
+      { factor: 'Promotion Pass-Over', weight: 0.25, value: Math.min(state.promotionPassOverCount / 4, 1) },
+      { factor: 'Tenure', weight: 0.10, value: state.riskScore * 0.10 },
+      { factor: 'Meeting Engagement', weight: 0.10, value: 1 - (state.performanceData.meetingStats?.avgContributionScore / 10 || 0.5) },
+      { factor: 'Similar Employee Patterns', weight: 0.05, value: state.similarEmployees?.length > 0 ? state.similarEmployees[0].similarity : 0 }
     ];
 
-    // Generate action items based on category
     const actionItems = [];
     if (state.category === 'at_risk') {
       actionItems.push({
         action: 'Schedule 1:1 meeting to discuss concerns',
         priority: 'high',
-        deadline: new Date(Date.now() + 3 * 24 * 60 * 60 * 1000), // 3 days
+        deadline: new Date(Date.now() + 3 * 24 * 60 * 60 * 1000),
         assignedTo: state.user.superior,
         status: 'pending'
       });
       actionItems.push({
         action: 'Review workload and identify blockers',
         priority: 'high',
-        deadline: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000), // 7 days
+        deadline: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
         assignedTo: state.user.superior,
         status: 'pending'
       });
@@ -340,7 +272,7 @@ async function saveResult(state) {
       actionItems.push({
         action: 'Discuss promotion readiness and timeline',
         priority: 'medium',
-        deadline: new Date(Date.now() + 14 * 24 * 60 * 60 * 1000), // 14 days
+        deadline: new Date(Date.now() + 14 * 24 * 60 * 60 * 1000),
         assignedTo: state.user.superior,
         status: 'pending'
       });
@@ -368,7 +300,6 @@ async function saveResult(state) {
 
     await recommendation.save();
 
-    // Create notification
     const { Notification } = require('../models');
     await Notification.create({
       user: state.user.superior,
@@ -383,24 +314,18 @@ async function saveResult(state) {
 
     logger.info(`Recommendation saved for user ${state.userId}: ${state.category}`);
 
-    return {
-      ...state,
-      recommendationId: recommendation._id,
-      saved: true
-    };
+    return { ...state, recommendationId: recommendation._id, saved: true };
   } catch (error) {
     logger.error(`Error saving recommendation: ${error.message}`);
     throw error;
   }
 }
 
-// Build and compile the graph
 function buildRecommendationGraph() {
   const workflow = new StateGraph({
     channels: recommendationState
   });
 
-  // Add nodes
   workflow.addNode('fetchData', fetchData);
   workflow.addNode('queryChroma', queryChroma);
   workflow.addNode('calculateRisk', calculateRisk);
@@ -409,13 +334,17 @@ function buildRecommendationGraph() {
   workflow.addNode('checkPromotion', checkPromotion);
   workflow.addNode('saveResult', saveResult);
 
-  // Add edges
   workflow.addEdge('fetchData', 'queryChroma');
   workflow.addEdge('queryChroma', 'calculateRisk');
   workflow.addEdge('calculateRisk', 'classifyEmployee');
-  workflow.addEdge('classifyEmployee', 'generateReasoning');
 
-  // Conditional edge from classifyEmployee
+  // ✅ FIX: Removed the conflicting addEdge('classifyEmployee', 'generateReasoning').
+  // In LangGraph you cannot have BOTH a direct addEdge AND addConditionalEdges
+  // from the same node — having both causes a graph compilation error at runtime
+  // because there are two outgoing edges from 'classifyEmployee'.
+  // The conditional edge alone handles all routing correctly:
+  //   promote/at_risk → checkPromotion → generateReasoning
+  //   monitor         → generateReasoning directly
   workflow.addConditionalEdges('classifyEmployee', (state) => {
     if (state.category === 'promote' || state.category === 'at_risk') {
       return 'checkPromotion';
@@ -427,13 +356,11 @@ function buildRecommendationGraph() {
   workflow.addEdge('generateReasoning', 'saveResult');
   workflow.addEdge('saveResult', END);
 
-  // Set entry point
   workflow.setEntryPoint('fetchData');
 
   return workflow.compile();
 }
 
-// Run the recommendation workflow
 async function runRecommendationWorkflow(userId) {
   const graph = buildRecommendationGraph();
 
