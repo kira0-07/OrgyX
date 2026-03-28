@@ -29,7 +29,6 @@ async def load_pipeline():
     try:
         from pyannote.audio import Pipeline
         import torch
-
         from huggingface_hub import login
         login(token=hf_token)
 
@@ -40,8 +39,18 @@ async def load_pipeline():
             use_auth_token=hf_token
         )
 
-        # Explicitly use CPU
         pipeline = pipeline.to(torch.device("cpu"))
+
+        # Set duration thresholds at init time — valid in pyannote 3.x
+        # min_duration_on=0.1 keeps any speech segment >= 100ms
+        # min_duration_off=0.1 splits speakers on silence gaps >= 100ms
+        # These cannot be passed at inference time in pyannote 3.x
+        try:
+            pipeline.segmentation.min_duration_on = 0.1
+            pipeline.segmentation.min_duration_off = 0.1
+            logger.info("Duration thresholds set: min_duration_on=0.1, min_duration_off=0.1")
+        except AttributeError:
+            logger.warning("Could not set duration thresholds — pipeline structure may differ")
 
         logger.info("Pipeline loaded successfully on cpu")
 
@@ -83,18 +92,8 @@ async def diarize(
         logger.info(f"Diarizing {file.filename} ({len(content)/1024:.1f}KB), num_speakers={num_speakers}")
 
         diarize_kwargs = {}
-
         if num_speakers and num_speakers > 1:
             diarize_kwargs["num_speakers"] = num_speakers
-
-        # FIX: Set min_duration thresholds so short speech bursts from
-        # judges speaking briefly in a demo meeting are not missed.
-        # min_duration_on=0.1 means any speech segment >= 100ms is kept.
-        # min_duration_off=0.1 means silence gaps >= 100ms split speakers.
-        # Previously pyannote used its defaults (~500ms) which caused
-        # brief utterances in short meetings to be silently dropped.
-        diarize_kwargs["min_duration_on"] = 0.1
-        diarize_kwargs["min_duration_off"] = 0.1
 
         diarization = pipeline(tmp_path, **diarize_kwargs)
 
