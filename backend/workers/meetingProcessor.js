@@ -157,7 +157,7 @@ async function transcribeWithGroq(audioPath) {
         // FIX: -0.8 threshold catches corrupted segments that -1.2 was missing.
         // no_speech_prob > 0.5 (tightened from 0.6) catches near-silence segments
         // that Whisper was transcribing as garbage text.
-        .filter(seg => (seg.avg_logprob ?? 0) >= -0.8 && (seg.no_speech_prob ?? 0) <= 0.5)
+        .filter(seg => (seg.avg_logprob ?? 0) >= -0.9 && (seg.no_speech_prob ?? 0) <= 0.5)
         .map(seg => ({ ...seg, text: filterHallucination(seg.text) }))
         .filter(seg => seg.text.length > 0);
     }
@@ -386,9 +386,9 @@ function stitchSegments(segments) {
 
   for (let i = 1; i < segments.length; i++) {
     const next = segments[i];
-    const sameSpeaker  = current.speaker === next.speaker;
-    const incomplete   = !/[.!?]$/.test(current.text.trim());
-    const closeInTime  = (next.startTime - current.endTime) < 0.6;
+    const sameSpeaker = current.speaker === next.speaker;
+    const incomplete = !/[.!?]$/.test(current.text.trim());
+    const closeInTime = (next.startTime - current.endTime) < 0.3;
 
     // FIX: Only look at segments between current and next in time,
     // not all segments before index i.
@@ -400,9 +400,9 @@ function stitchSegments(segments) {
     );
 
     if (sameSpeaker && incomplete && closeInTime && noInterleavedSpeaker) {
-      current.text    = current.text.trim() + ' ' + next.text.trim();
+      current.text = current.text.trim() + ' ' + next.text.trim();
       current.endTime = next.endTime;
-      current.end     = next.endTime;
+      current.end = next.endTime;
     } else {
       stitched.push(current);
       current = { ...next };
@@ -456,7 +456,29 @@ async function processPerDeviceAudio(perDeviceAudio, meetingId, hostName = null)
         continue;
       }
 
-      const result = await transcribeWithGroq(localPath);
+      const fileSizeMB = stat.size / (1024 * 1024);
+      let result;
+      if (fileSizeMB > 24) {
+        logger.info(`${userName} audio is ${fileSizeMB.toFixed(1)}MB — splitting into chunks`);
+        const chunks = await splitAudioWithOverlap(localPath);
+        const chunkSegments = [];  // ← renamed to avoid shadowing outer allSegments
+        for (const chunk of chunks) {
+          const chunkResult = await transcribeWithGroq(chunk.path);
+          if (chunkResult?.segments) {
+            chunkResult.segments.forEach(seg => {
+              chunkSegments.push({
+                ...seg,
+                start: (seg.start || 0) + chunk.startTime,
+                end: (seg.end || 0) + chunk.startTime
+              });
+            });
+          }
+          try { fs.unlinkSync(chunk.path); } catch (_) { }
+        }
+        result = { segments: chunkSegments, text: chunkSegments.map(s => s.text).join(' ') };
+      } else {
+        result = await transcribeWithGroq(localPath);
+      }
       const segments = result?.segments || [];
 
       logger.info(`${userName}: ${segments.length} segments transcribed`);
@@ -466,14 +488,14 @@ async function processPerDeviceAudio(perDeviceAudio, meetingId, hostName = null)
         if (!text || text.length < 2) continue;
 
         allSegments.push({
-          speaker:   userName,
+          speaker: userName,
           text,
           startTime: seg.start || 0,
-          endTime:   seg.end   || 0,
-          start:     seg.start || 0,
-          end:       seg.end   || 0,
+          endTime: seg.end || 0,
+          start: seg.start || 0,
+          end: seg.end || 0,
           userId,
-          source:    'per-device',
+          source: 'per-device',
           _deviceRecordingStart: device.recordingStartTime || 0,
         });
       }
@@ -482,7 +504,7 @@ async function processPerDeviceAudio(perDeviceAudio, meetingId, hostName = null)
       logger.warn(`Failed to process audio for ${userName}: ${e.message}`);
     } finally {
       if (localPath) {
-        try { fs.unlinkSync(localPath); } catch (_) {}
+        try { fs.unlinkSync(localPath); } catch (_) { }
       }
     }
   }
@@ -504,9 +526,9 @@ async function processPerDeviceAudio(perDeviceAudio, meetingId, hostName = null)
     for (const seg of allSegments) {
       const deviceOffset = ((seg._deviceRecordingStart || earliestStart) - earliestStart) / 1000;
       seg.startTime = seg.startTime + deviceOffset;
-      seg.endTime   = seg.endTime   + deviceOffset;
-      seg.start     = seg.startTime;
-      seg.end       = seg.endTime;
+      seg.endTime = seg.endTime + deviceOffset;
+      seg.start = seg.startTime;
+      seg.end = seg.endTime;
       delete seg._deviceRecordingStart;
     }
 
@@ -544,7 +566,7 @@ async function processPerDeviceAudio(perDeviceAudio, meetingId, hostName = null)
       const a = existing.text.trim().toLowerCase();
       const b = seg.text.trim().toLowerCase();
       const timeDiff = Math.abs(seg.startTime - existing.startTime);
-      const longer  = Math.max(a.length, b.length);
+      const longer = Math.max(a.length, b.length);
       const shorter = Math.min(a.length, b.length);
       return timeDiff < 10 && longer > 0 && shorter / longer > 0.85;
     });
@@ -638,11 +660,11 @@ async function processMeeting(job) {
               allSegments.push({
                 ...seg,
                 start: (seg.start || 0) + chunk.startTime,
-                end:   (seg.end   || 0) + chunk.startTime
+                end: (seg.end || 0) + chunk.startTime
               });
             });
           }
-          try { fs.unlinkSync(chunk.path); } catch (_) {}
+          try { fs.unlinkSync(chunk.path); } catch (_) { }
         }
         groqResult = { text: transcript, segments: allSegments };
       } else {
@@ -666,11 +688,11 @@ async function processMeeting(job) {
       logger.info(`Attendees for diarization: ${attendeeNames.join(', ')}`);
 
       const rawSegments = (groqResult?.segments || []).map(seg => ({
-        text:      seg.text?.trim() || '',
+        text: seg.text?.trim() || '',
         startTime: seg.start || 0,
-        endTime:   seg.end   || 0,
-        start:     seg.start || 0,
-        end:       seg.end   || 0
+        endTime: seg.end || 0,
+        start: seg.start || 0,
+        end: seg.end || 0
       })).filter(seg => seg.text.length > 0);
 
       const numSpeakers = attendeeNames.length;
@@ -689,10 +711,10 @@ async function processMeeting(job) {
       }
 
       const rawMappedSegments = labeledSegments.map(seg => ({
-        speaker:   seg.speaker || 'Unknown Speaker',
+        speaker: seg.speaker || 'Unknown Speaker',
         startTime: seg.startTime || seg.start || 0,
-        endTime:   seg.endTime   || seg.end   || 0,
-        text:      seg.text || ''
+        endTime: seg.endTime || seg.end || 0,
+        text: seg.text || ''
       }));
 
       // Mixed audio dedup keeps cross-speaker check since diarization can
@@ -703,7 +725,7 @@ async function processMeeting(job) {
           const a = existing.text.trim().toLowerCase();
           const b = seg.text.trim().toLowerCase();
           const timeDiff = Math.abs(seg.startTime - existing.startTime);
-          const longer  = Math.max(a.length, b.length);
+          const longer = Math.max(a.length, b.length);
           const shorter = Math.min(a.length, b.length);
           return timeDiff < 15 && longer > 0 && shorter / longer > 0.8;
         });
@@ -712,7 +734,7 @@ async function processMeeting(job) {
 
       // Stitch mixed audio segments too
       transcriptSegments = stitchSegments(dedupedSegments);
-      try { fs.unlinkSync(localAudioPath); } catch (_) {}
+      try { fs.unlinkSync(localAudioPath); } catch (_) { }
     }
 
     // Final sort
@@ -795,7 +817,7 @@ async function processMeeting(job) {
         attendee.keyPoints = contribution.keyPoints || [];
 
         meeting.attendeeContributions.push({
-          user:      attendee.user._id,
+          user: attendee.user._id,
           name,
           score,
           keyPoints: contribution.keyPoints || [],
@@ -845,10 +867,10 @@ async function processMeeting(job) {
           embeddings: [embedding],
           documents: [chunks[i]],
           metadatas: [{
-            meetingId:  meetingId.toString(),
-            domain:     meeting.domain,
-            date:       meeting.scheduledDate.toISOString(),
-            attendees:  attendeeNames.join(', '),
+            meetingId: meetingId.toString(),
+            domain: meeting.domain,
+            date: meeting.scheduledDate.toISOString(),
+            attendees: attendeeNames.join(', '),
             chunkIndex: i
           }]
         });
@@ -864,10 +886,10 @@ async function processMeeting(job) {
         if (performance) {
           performance.meetingStats = performance.meetingStats || { totalMeetings: 0, avgContributionScore: 0 };
           performance.meetingStats.totalMeetings += 1;
-          const prevAvg   = performance.meetingStats.avgContributionScore || 0;
+          const prevAvg = performance.meetingStats.avgContributionScore || 0;
           const prevCount = performance.meetingStats.totalMeetings - 1;
-          const newScore  = attendee.contributionScore || 5;
-          const newAvg    = (prevAvg * prevCount + newScore) / performance.meetingStats.totalMeetings;
+          const newScore = attendee.contributionScore || 5;
+          const newAvg = (prevAvg * prevCount + newScore) / performance.meetingStats.totalMeetings;
           performance.meetingStats.avgContributionScore = isNaN(newAvg) ? 5 : newAvg;
           await performance.save();
         }
@@ -878,16 +900,16 @@ async function processMeeting(job) {
 
     await Meeting.findByIdAndUpdate(meetingId, {
       status: 'ready',
-      transcriptRaw:              meeting.transcriptRaw,
-      transcriptSegments:         meeting.transcriptSegments,
-      speakerDiarizationMethod:   meeting.speakerDiarizationMethod,
+      transcriptRaw: meeting.transcriptRaw,
+      transcriptSegments: meeting.transcriptSegments,
+      speakerDiarizationMethod: meeting.speakerDiarizationMethod,
       speakerDiarizationEditable: meeting.speakerDiarizationEditable,
-      actualDuration:             meeting.actualDuration,
-      summary:                    meeting.summary,
-      conclusions:    (meeting.conclusions    || []).filter(Boolean),
-      decisions:      (meeting.decisions      || []).filter(Boolean),
+      actualDuration: meeting.actualDuration,
+      summary: meeting.summary,
+      conclusions: (meeting.conclusions || []).filter(Boolean),
+      decisions: (meeting.decisions || []).filter(Boolean),
       followUpTopics: (meeting.followUpTopics || []).filter(Boolean),
-      actionItems:    (meeting.actionItems    || []).filter(item => item && item.task),
+      actionItems: (meeting.actionItems || []).filter(item => item && item.task),
       attendeeContributions: (meeting.attendeeContributions || []).filter(Boolean),
       attendees: meeting.attendees,
     }, { new: true });
@@ -895,13 +917,13 @@ async function processMeeting(job) {
     await updateStep(meetingId, 'ready', 'done', 'Meeting processing complete', io);
 
     await Notification.create({
-      user:    meeting.host,
-      type:    'meeting_ready',
-      title:   'Meeting analysis ready',
+      user: meeting.host,
+      type: 'meeting_ready',
+      title: 'Meeting analysis ready',
       message: `"${meeting.name}" has been processed and is ready for review`,
-      link:    `/meetings/${meeting._id}`,
+      link: `/meetings/${meeting._id}`,
       entityType: 'meeting',
-      entityId:   meeting._id
+      entityId: meeting._id
     });
 
     logger.info(`Meeting ${meetingId} processing complete — method: ${meeting.speakerDiarizationMethod}`);
@@ -927,13 +949,13 @@ const worker = new Worker('meeting-processing', processMeeting, {
 });
 
 worker.on('completed', (job) => logger.info(`Job ${job.id} completed`));
-worker.on('failed',    (job, err) => logger.error(`Job ${job.id} failed: ${err.message}`));
+worker.on('failed', (job, err) => logger.error(`Job ${job.id} failed: ${err.message}`));
 
 const KEEP_ALIVE_INTERVAL = 10 * 60 * 1000;
 
 async function pingDiarizationService() {
   try {
-    const res  = await fetch(`${DIARIZATION_URL}/health`, { timeout: 8000 });
+    const res = await fetch(`${DIARIZATION_URL}/health`, { timeout: 8000 });
     const data = await res.json();
     if (data.pipeline_loaded) {
       logger.info('Diarization keep-alive: pipeline loaded');
@@ -946,7 +968,7 @@ async function pingDiarizationService() {
 }
 
 pingDiarizationService();
-const keepAliveTimer   = setInterval(pingDiarizationService, KEEP_ALIVE_INTERVAL);
+const keepAliveTimer = setInterval(pingDiarizationService, KEEP_ALIVE_INTERVAL);
 const workerHealthTimer = setInterval(() => {
   logger.info(`Worker alive, uptime: ${Math.round(process.uptime())}s`);
 }, 5 * 60 * 1000);
