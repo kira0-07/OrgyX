@@ -49,22 +49,31 @@ const logger = winston.createLogger({
 });
 
 const allowedOrigins = [
+  'https://orgyx.vercel.app',
   'https://orgos-swart.vercel.app',
   'https://team-catalyst-v2-0.vercel.app',
   'http://localhost:3000',
   'http://localhost:3001',
   process.env.FRONTEND_URL,
-].filter(Boolean);
+].filter(Boolean).map(url => url.replace(/\/$/, "")); // Normalize by stripping trailing slash
 
 const corsOptions = {
   origin: function (origin, callback) {
     if (!origin) return callback(null, true);
-    if (allowedOrigins.includes(origin)) return callback(null, true);
+    // Normalize incoming origin for comparison
+    const normalizedOrigin = origin.replace(/\/$/, "");
+    
+    // Check exact match or Vercel wildcard for development/previews
+    if (allowedOrigins.includes(normalizedOrigin) || normalizedOrigin.endsWith('.vercel.app')) {
+      return callback(null, true);
+    }
+    
+    logger.warn(`Rejected CORS origin: ${origin}`);
     callback(new Error('CORS not allowed'));
   },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept'],
 };
 
 const app = express();
@@ -90,8 +99,8 @@ app.use(helmet({ contentSecurityPolicy: false, crossOriginEmbedderPolicy: false 
 app.use(cors(corsOptions));
 app.options('*', cors(corsOptions));
 app.use(compression());
-app.use(express.json({ limit: '10mb' }));
-app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 app.use(cookieParser());
 app.use(morgan('combined', { stream: { write: message => logger.info(message.trim()) } }));
 
