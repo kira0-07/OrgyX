@@ -534,16 +534,56 @@ export default function MeetingRoom({ meetingId, user }) {
       recordingChunksRef.current = [];
       recorder.ondataavailable = e => { if (e.data.size > 0) recordingChunksRef.current.push(e.data); };
       recorder.onstop = async () => {
-        const blob = new Blob(recordingChunksRef.current, { type: 'audio/webm' });
+        const chunks = [...recordingChunksRef.current];
+        recordingChunksRef.current = [];
+        const blob = new Blob(chunks, { type: 'audio/webm' });
+        
         try {
-          toast.loading('Processing per-device audio...', { id: 'upload' });
-          const perDeviceAudio = await new Promise(resolve => { const timeout = setTimeout(() => resolve([]), 15000); socketRef.current?.once('transcript-queue', ({ perDeviceAudio: pda }) => { clearTimeout(timeout); resolve(pda || []); }); stopMyRecording(); socketRef.current?.emit('get-transcript-queue', { meetingId }); });
-          const fd = new FormData(); fd.append('recording', blob, 'meeting-recording.webm');
-          if (perDeviceAudio.length > 0) fd.append('perDeviceAudio', JSON.stringify(perDeviceAudio));
-          toast.loading('Uploading recording for AI processing...', { id: 'upload' });
-          await api.post(`/meetings/${meetingId}/upload-recording`, fd, { headers: { 'Content-Type': 'multipart/form-data' } });
-          toast.success(perDeviceAudio.length > 0 ? `Per-device audio from ${perDeviceAudio.length} participants — accurate speaker attribution!` : 'Mixed audio uploaded — AI will identify speakers.', { id: 'upload', duration: 5000 });
-        } catch (e) { toast.error('Failed to upload recording', { id: 'upload' }); }
+          toast.loading('Syncing per-device audio logs...', { id: 'upload' });
+          
+          // ── FIX: Explicitly await the final chunk sync ────────────────────
+          // Previously this was not awaited, causing a race where we asked for
+          // the queue before our own final chunks had arrived at the server.
+          await stopMyRecording(); 
+          
+          // Small delay to let the server process the last async audio-chunk
+          await new Promise(r => setTimeout(r, 1000));
+
+          const perDeviceAudio = await new Promise(resolve => {
+            const timeout = setTimeout(() => {
+              logger.warn('Per-device audio sync timed out');
+              resolve([]);
+            }, 15000);
+
+            socketRef.current?.once('transcript-queue', ({ perDeviceAudio: pda }) => {
+              clearTimeout(timeout);
+              resolve(pda || []);
+            });
+
+            socketRef.current?.emit('get-transcript-queue', { meetingId });
+          });
+
+          const fd = new FormData();
+          fd.append('recording', blob, 'meeting-recording.webm');
+          if (perDeviceAudio.length > 0) {
+            fd.append('perDeviceAudio', JSON.stringify(perDeviceAudio));
+          }
+
+          toast.loading('Uploading and starting AI analysis...', { id: 'upload' });
+          await api.post(`/meetings/${meetingId}/upload-recording`, fd, {
+            headers: { 'Content-Type': 'multipart/form-data' }
+          });
+
+          toast.success(
+            perDeviceAudio.length > 0 
+              ? `Done! Synced ${perDeviceAudio.length} speaker channels for accurate attribution.`
+              : 'Done! Processing mixed audio for AI analysis.',
+            { id: 'upload', duration: 6000 }
+          );
+        } catch (e) {
+          logger.error('Upload failed:', e);
+          toast.error('Failed to upload recording. Please try manual upload in history.', { id: 'upload' });
+        }
       };
       recorder.start(1000); mediaRecorderRef.current = recorder;
       socketRef.current?.emit('start-recording', { meetingId }); setIsRecording(true); toast.success('Recording started');
