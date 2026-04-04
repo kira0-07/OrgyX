@@ -16,12 +16,12 @@ const logger = winston.createLogger({
   transports: [new winston.transports.Console()]
 });
 
+const { getRedisConnection } = require('../config/redisConnection');
+
 let meetingQueue;
 try {
   meetingQueue = new Queue('meeting-processing', {
-    connection: {
-      url: process.env.REDIS_URL
-    }
+    connection: getRedisConnection()
   });
 } catch (error) {
   logger.error(`Failed to initialize meeting queue: ${error.message}`);

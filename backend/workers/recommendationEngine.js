@@ -27,11 +27,11 @@ async function generateRecommendation(job) {
   }
 }
 
+const { getRedisConnection } = require('../config/redisConnection');
+
 // Create worker
 const worker = new Worker('recommendation-generation', generateRecommendation, {
-  connection: {
-    url: process.env.REDIS_URL
-  },
+  connection: getRedisConnection(),
   concurrency: 3
 });
 

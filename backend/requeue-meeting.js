@@ -145,8 +145,10 @@ async function run() {
   console.log(`\n✅ Meeting reset to processing`);
 
   // ── Queue job ─────────────────────────────────────────────────────────────
+  const { getRedisConnection } = require('./config/redisConnection');
+
   const q = new Queue('meeting-processing', {
-    connection: { url: process.env.REDIS_URL }
+    connection: getRedisConnection()
   });
 
   const job = await q.add('process-meeting', jobData, {

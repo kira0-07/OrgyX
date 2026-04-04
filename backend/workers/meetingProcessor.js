@@ -943,8 +943,10 @@ async function processMeeting(job) {
   }
 }
 
+const { getRedisConnection } = require('../config/redisConnection');
+
 const worker = new Worker('meeting-processing', processMeeting, {
-  connection: { url: process.env.REDIS_URL },
+  connection: getRedisConnection(),
   concurrency: 2
 });
 

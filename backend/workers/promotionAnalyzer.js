@@ -81,11 +81,11 @@ async function analyzePromotions(job) {
   }
 }
 
+const { getRedisConnection } = require('../config/redisConnection');
+
 // Create worker
 const worker = new Worker('promotion-analysis', analyzePromotions, {
-  connection: {
-    url: process.env.REDIS_URL
-  }
+  connection: getRedisConnection()
 });
 
 worker.on('completed', (job) => {

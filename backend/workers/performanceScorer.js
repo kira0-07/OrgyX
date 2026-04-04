@@ -209,11 +209,11 @@ function getCurrentWeek() {
   return `${year}-W${week.toString().padStart(2, '0')}`;
 }
 
+const { getRedisConnection } = require('../config/redisConnection');
+
 // Create worker
 const worker = new Worker('performance-scoring', updatePerformance, {
-  connection: {
-    url: process.env.REDIS_URL
-  },
+  connection: getRedisConnection(),
   concurrency: 5
 });
 

@@ -399,11 +399,11 @@ async function processResignationPrediction(job) {
   }
 }
 
+const { getRedisConnection } = require('../config/redisConnection');
+
 // Create worker
 const worker = new Worker('resignation-prediction', processResignationPrediction, {
-  connection: {
-    url: process.env.REDIS_URL
-  },
+  connection: getRedisConnection(),
   concurrency: 2
 });
 
