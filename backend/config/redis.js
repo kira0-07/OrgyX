@@ -10,14 +10,22 @@ const logger = winston.createLogger({
   transports: [new winston.transports.Console()]
 });
 
-const redis = new Redis(process.env.REDIS_URL || 'redis://localhost:6379', {
+const redisUrl = process.env.REDIS_URL || 'redis://localhost:6379';
+const redisOpts = {
   maxRetriesPerRequest: null,
   enableReadyCheck: false,
   retryStrategy: (times) => {
     const delay = Math.min(times * 50, 2000);
     return delay;
   }
-});
+};
+
+// Upstash uses rediss:// (TLS) — ioredis needs tls option
+if (redisUrl.startsWith('rediss://')) {
+  redisOpts.tls = {};
+}
+
+const redis = new Redis(redisUrl, redisOpts);
 
 redis.on('connect', () => {
   logger.info('Redis connected successfully');
