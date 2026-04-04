@@ -1,0 +1,27 @@
+﻿backend-1  | 
+backend-1  | > orgos-backend@1.0.0 dev
+backend-1  | > nodemon server.js
+backend-1  | 
+backend-1  | [33m[nodemon] 3.1.14[39m
+backend-1  | [33m[nodemon] to restart at any time, enter `rs`[39m
+backend-1  | [33m[nodemon] watching path(s): *.*[39m
+backend-1  | [33m[nodemon] watching extensions: js,mjs,cjs,json[39m
+backend-1  | [32m[nodemon] starting `node server.js`[39m
+backend-1  | /app/node_modules/resend/dist/index.js:339
+backend-1  |         throw new Error(
+backend-1  |         ^
+backend-1  | 
+backend-1  | Error: Missing API key. Pass it to the constructor `new Resend("re_123")`
+backend-1  |     at new Resend (/app/node_modules/resend/dist/index.js:339:15)
+backend-1  |     at Object.<anonymous> (/app/config/email.js:15:16)
+backend-1  |     at Module._compile (node:internal/modules/cjs/loader:1521:14)
+backend-1  |     at Module._extensions..js (node:internal/modules/cjs/loader:1623:10)
+backend-1  |     at Module.load (node:internal/modules/cjs/loader:1266:32)
+backend-1  |     at Module._load (node:internal/modules/cjs/loader:1091:12)
+backend-1  |     at Module.require (node:internal/modules/cjs/loader:1289:19)
+backend-1  |     at require (node:internal/modules/helpers:182:18)
+backend-1  |     at Object.<anonymous> (/app/controllers/authController.js:5:54)
+backend-1  |     at Module._compile (node:internal/modules/cjs/loader:1521:14)
+backend-1  | 
+backend-1  | Node.js v20.20.2
+backend-1  | [31m[nodemon] app crashed - waiting for file changes before starting...[39m

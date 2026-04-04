@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 
-const PUBLIC_ROUTES = ['/login', '/forgot-password', '/reset-password'];
+const PUBLIC_ROUTES = ['/', '/login', '/forgot-password', '/reset-password', '/enterprise', '/features', '/pricing', '/product', '/resources'];
 const ADMIN_ROUTES = ['/admin', '/dashboard/admin', '/audit'];
 const SUPERIOR_ROUTES = ['/recommendations'];
 
@@ -8,9 +8,10 @@ export function middleware(request) {
   const { pathname } = request.nextUrl;
 
   // Allow public routes
-  if (PUBLIC_ROUTES.some(route => pathname.startsWith(route))) {
+  if (PUBLIC_ROUTES.some(route => route === '/' ? pathname === '/' : pathname.startsWith(route))) {
     return NextResponse.next();
   }
+
 
   // Allow static files and Next.js internals
   if (

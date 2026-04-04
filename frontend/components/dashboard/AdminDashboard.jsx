@@ -90,56 +90,66 @@ export default function AdminDashboard() {
   }
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
+      
+      {/* ── Welcome Header ── */}
+      <div className="mb-8">
+        <h1 className="text-3xl font-bold tracking-tight mb-1 text-foreground">Global Control Center</h1>
+        <p className="text-muted-foreground font-medium">System Administration · Infrastructure Health</p>
+      </div>
 
       {/* ── Top Stats ── */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
-        <Card className="bg-card border-muted">
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-medium text-muted-foreground flex items-center gap-2">
-              <Users className="h-4 w-4" /> Total Users
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold text-slate-100">{stats?.users || 0}</div>
-            <p className="text-sm text-muted-foreground">{stats?.activeUsers || 0} active</p>
-          </CardContent>
+        <Card className="bg-surface border-border flex flex-col p-5 card-elevated">
+          <div className="flex items-center gap-4">
+            <div className="p-3 bg-primary/10 rounded-xl text-primary"><Users className="h-6 w-6" /></div>
+            <div>
+              <p className="text-xs uppercase tracking-wider text-muted-foreground font-semibold">Total Users</p>
+              <div className="text-2xl font-bold mt-0.5">{stats?.users || 0}</div>
+            </div>
+          </div>
+          <div className="mt-4 pt-3 border-t border-border/50 text-xs text-muted-foreground">
+            {stats?.activeUsers || 0} currently active
+          </div>
         </Card>
 
-        <Card className="bg-card border-muted">
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-medium text-muted-foreground flex items-center gap-2">
-              <UserPlus className="h-4 w-4" /> New This Month
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold text-green-400">{stats?.newUsersThisMonth || 0}</div>
-            <p className="text-sm text-muted-foreground">Users onboarded</p>
-          </CardContent>
+        <Card className="bg-surface border-border flex flex-col p-5 card-elevated">
+          <div className="flex items-center gap-4">
+            <div className="p-3 bg-green-500/10 rounded-xl text-green-500"><UserPlus className="h-6 w-6" /></div>
+            <div>
+              <p className="text-xs uppercase tracking-wider text-muted-foreground font-semibold">New This Month</p>
+              <div className="text-2xl font-bold mt-0.5">{stats?.newUsersThisMonth || 0}</div>
+            </div>
+          </div>
+          <div className="mt-4 pt-3 border-t border-border/50 text-xs text-green-500 font-medium">
+            +14% from last month
+          </div>
         </Card>
 
-        <Card className="bg-card border-muted">
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-medium text-muted-foreground flex items-center gap-2">
-              <AlertTriangle className="h-4 w-4 text-red-400" /> At Risk
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold text-red-400">{stats?.atRiskUsers || 0}</div>
-            <p className="text-sm text-muted-foreground">Employees flagged</p>
-          </CardContent>
+        <Card className="bg-surface border-border flex flex-col p-5 card-elevated">
+          <div className="flex items-center gap-4">
+            <div className="p-3 bg-red-500/10 rounded-xl text-red-500"><AlertTriangle className="h-6 w-6" /></div>
+            <div>
+              <p className="text-xs uppercase tracking-wider text-muted-foreground font-semibold">At Risk</p>
+              <div className="text-2xl font-bold mt-0.5">{stats?.atRiskUsers || 0}</div>
+            </div>
+          </div>
+          <div className="mt-4 pt-3 border-t border-border/50 text-xs text-red-500 font-medium">
+            Requires intervention
+          </div>
         </Card>
 
-        <Card className="bg-card border-muted">
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-medium text-muted-foreground flex items-center gap-2">
-              <Shield className="h-4 w-4" /> Admin Users
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold text-slate-100">{stats?.adminUsers || 0}</div>
-            <p className="text-sm text-muted-foreground">System admins</p>
-          </CardContent>
+        <Card className="bg-surface border-border flex flex-col p-5 card-elevated">
+          <div className="flex items-center gap-4">
+            <div className="p-3 bg-purple-500/10 rounded-xl text-purple-500"><Shield className="h-6 w-6" /></div>
+            <div>
+              <p className="text-xs uppercase tracking-wider text-muted-foreground font-semibold">Admins</p>
+              <div className="text-2xl font-bold mt-0.5">{stats?.adminUsers || 0}</div>
+            </div>
+          </div>
+          <div className="mt-4 pt-3 border-t border-border/50 text-xs text-muted-foreground">
+            System administrators
+          </div>
         </Card>
       </div>
 

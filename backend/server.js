@@ -11,7 +11,7 @@ const compression = require('compression');
 const rateLimit = require('express-rate-limit');
 const slowDown = require('express-slow-down');
 const winston = require('winston');
-
+const path = require('path');
 const connectDB = require('./config/db');
 const { initializeCollections } = require('./config/chroma');
 
@@ -95,16 +95,19 @@ app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 app.use(cookieParser());
 app.use(morgan('combined', { stream: { write: message => logger.info(message.trim()) } }));
 
+// Mount local file storage for meetings
+app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
+
 const generalLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: 100,
+  max: 5000, // Relaxed from 100 to 5000 for local dev
   message: { success: false, message: 'Too many requests, please try again later.' }
 });
 app.use('/api/', generalLimiter);
 
 const speedLimiter = slowDown({
   windowMs: 15 * 60 * 1000,
-  delayAfter: 50,
+  delayAfter: 5000, // Relaxed from 50 to 5000
   delayMs: 500
 });
 

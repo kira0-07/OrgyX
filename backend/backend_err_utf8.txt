@@ -1,0 +1,39 @@
+﻿node : ExpressSlowDownWarning: The behaviour of the 'delayMs' option was changed in express-slow-down v2:
+At line:1 char:1
++ node server.js 2>&1 | Out-File -FilePath backend_err_utf8.txt -Encodi ...
++ ~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo              : NotSpecified: (E    xpressSlowDown...s-sl    ow-down v2::String) [    ], RemoteException
+    + FullyQualifiedError    Id : NativeCommandErr    or
+ 
+- For the old behavior, change the delayMs option to:
+
+  delayMs: (used, req) => {
+	  const delayAfter = req.slowDown.limit;
+	  return (used - delayAfter) * 500;
+  },
+
+- For the new behavior, change the delayMs option to:
+
+	delayMs: () => 500,
+
+Or set 'options.validate: {delayMs: false}' to disable this message. See https://express-rate-limit.github.io/WRN_ESD_DELAYMS/ for more information.
+    at slowDown (C:\Users\adith\Downloads\hack 2k26\the OG developer\Team-Catalyst-V2.0\backend\node_modules\express-slow-down\dist\index.cjs:78:18)
+    at Object.<anonymous> (C:\Users\adith\Downloads\hack 2k26\the OG developer\Team-Catalyst-V2.0\backend\server.js:108:22)
+    at Module._compile (node:internal/modules/cjs/loader:1706:14)
+    at Object..js (node:internal/modules/cjs/loader:1839:10)
+    at Module.load (node:internal/modules/cjs/loader:1441:32)
+    at Function._load (node:internal/modules/cjs/loader:1263:12)
+    at TracingChannel.traceSync (node:diagnostics_channel:328:14)
+    at wrapModuleLoad (node:internal/modules/cjs/loader:237:24)
+    at Function.executeUserEntryPoint [as runMain] (node:internal/modules/run_main:171:5)
+    at node:internal/main/run_main_module:36:49 {
+  code: 'WRN_ESD_DELAYMS',
+  help: 'https://express-rate-limit.github.io/WRN_ESD_DELAYMS/'
+}
+(node:22872) [MONGOOSE] Warning: Duplicate schema index on {"email":1} found. This is often due to declaring an index using both "index: true" and "schema.index()". Please remove the duplicate index 
+definition.
+(Use `node --trace-warnings ...` to show where the warning was created)
+[32minfo[39m: Server running on port 5001 {"timestamp":"2026-04-03T06:00:32.301Z"}
+[32minfo[39m: Environment: development {"timestamp":"2026-04-03T06:00:32.303Z"}
+[32minfo[39m: Allowed origins: https://orgos-swart.vercel.app, https://team-catalyst-v2-0.vercel.app, http://localhost:3000, http://localhost:3001 {"timestamp":"2026-04-03T06:00:32.303Z"}
+{"level":"error","message":"Error connecting to MongoDB: The `uri` parameter to `openUri()` must be a string, got \"undefined\". Make sure the first parameter to `mongoose.connect()` or `mongoose.createConnection()` is a string.","timestamp":"2026-04-03T06:00:32.304Z"}

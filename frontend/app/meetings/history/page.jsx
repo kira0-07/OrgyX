@@ -63,8 +63,7 @@ export default function MeetingsHistoryPage() {
       case 'scheduled': return 'bg-blue-500/20 text-blue-500';
       case 'live':      return 'bg-red-500/20 text-red-500';
       case 'cancelled': return 'bg-red-900/20 text-red-700';
-      case 'completed': return 'bg-slate-500/20 text-muted-foreground';
-      default:          return 'bg-slate-500/20 text-muted-foreground';
+      case 'completed': return 'bg-muted text-muted-foreground';
     }
   };
 

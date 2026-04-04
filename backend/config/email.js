@@ -11,8 +11,9 @@ const logger = winston.createLogger({
   transports: [new winston.transports.Console()]
 });
 
-// Initialize Resend
-const resend = new Resend(process.env.RESEND_API_KEY);
+// Initialize Resend conditionally
+const resendApiKey = process.env.RESEND_API_KEY;
+const resend = (resendApiKey && resendApiKey.startsWith('re_')) ? new Resend(resendApiKey) : null;
 
 // Fallback nodemailer transport for development
 const createTestTransporter = () => {

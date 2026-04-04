@@ -90,7 +90,7 @@ export default function RecommendationsPage() {
       case 'monitor':
         return <TrendingDown className="h-5 w-5 text-yellow-500" />;
       default:
-        return <Clock className="h-5 w-5 text-slate-500" />;
+        return <Clock className="h-5 w-5 text-muted-foreground" />;
     }
   };
 
@@ -159,7 +159,7 @@ export default function RecommendationsPage() {
             </Card>
             <Card className="bg-card border-muted">
               <CardContent className="flex items-center gap-3 py-4">
-                <div className="p-2 rounded-lg bg-slate-500/20">
+                <div className="p-2 rounded-lg bg-muted text-muted-foreground">
                   <Clock className="h-5 w-5 text-muted-foreground" />
                 </div>
                 <div>
@@ -176,12 +176,12 @@ export default function RecommendationsPage() {
           <CardContent className="py-4">
             <div className="flex flex-col sm:flex-row gap-4">
               <div className="relative flex-1">
-                <Search className="absolute left-3 top-3 h-4 w-4 text-slate-500" />
+                <Search className="absolute left-3 top-3 h-4 w-4 text-muted-foreground" />
                 <Input
                   placeholder="Search recommendations..."
                   value={search}
                   onChange={(e) => setSearch(e.target.value)}
-                  className="pl-10 bg-muted border-slate-700"
+                  className="pl-10 bg-muted border-border"
                 />
               </div>
               <div className="flex gap-2">
@@ -191,7 +191,7 @@ export default function RecommendationsPage() {
                     variant={filter === f ? 'default' : 'outline'}
                     size="sm"
                     onClick={() => setFilter(f)}
-                    className={filter === f ? '' : 'border-slate-700'}
+                    className={filter === f ? '' : 'border-border'}
                   >
                     {f === 'all' ? 'All' : f.replace('_', ' ')}
                   </Button>

@@ -93,7 +93,7 @@ export default function UserDetailPage({ params }) {
     return (
       <DashboardLayout>
         <div className="text-center py-12">
-          <Users className="h-12 w-12 mx-auto mb-4 text-slate-500" />
+          <Users className="h-12 w-12 mx-auto mb-4 text-muted-foreground" />
           <p className="text-muted-foreground">User not found</p>
           <Button className="mt-4" onClick={() => router.push('/team')}>Back to Team</Button>
         </div>
@@ -112,13 +112,13 @@ export default function UserDetailPage({ params }) {
               <ArrowLeft className="h-5 w-5" />
             </Button>
             <div className="flex items-center gap-4">
-              <div className="w-16 h-16 rounded-full bg-slate-700 flex items-center justify-center text-2xl text-slate-300 font-semibold">
+              <div className="w-16 h-16 rounded-full bg-muted flex items-center justify-center text-2xl text-foreground font-semibold">
                 {user.firstName?.[0]}{user.lastName?.[0]}
               </div>
               <div>
                 <h1 className="text-2xl font-bold">{user.firstName} {user.lastName}</h1>
                 <div className="flex items-center gap-2 mt-1">
-                  <Badge variant="secondary" className="bg-muted text-slate-300">{user.role}</Badge>
+                  <Badge variant="secondary" className="bg-muted text-foreground">{user.role}</Badge>
                   <span className="text-muted-foreground text-sm">Level {user.roleLevel}</span>
                 </div>
               </div>
@@ -126,7 +126,7 @@ export default function UserDetailPage({ params }) {
           </div>
           <Button
             variant="outline"
-            className="border-slate-700"
+            className="border-border"
             onClick={() => window.location.href = `mailto:${user.email}`}
           >
             <Mail className="mr-2 h-4 w-4" />
@@ -140,7 +140,7 @@ export default function UserDetailPage({ params }) {
             <CardContent className="flex items-center gap-3 py-4">
               <Activity className="h-5 w-5 text-muted-foreground" />
               <div>
-                <p className="text-sm text-slate-500">Performance</p>
+                <p className="text-sm text-muted-foreground">Performance</p>
                 <div className="flex items-center gap-2">
                   <p className="font-medium text-lg">{currentScore}/100</p>
                   <div className={getTrendColor()}>{getTrendIcon()}</div>
@@ -153,7 +153,7 @@ export default function UserDetailPage({ params }) {
             <CardContent className="flex items-center gap-3 py-4">
               <Users className="h-5 w-5 text-muted-foreground" />
               <div>
-                <p className="text-sm text-slate-500">Direct Reports</p>
+                <p className="text-sm text-muted-foreground">Direct Reports</p>
                 <p className="font-medium text-lg">{team?.directReports?.length || 0}</p>
               </div>
             </CardContent>
@@ -163,7 +163,7 @@ export default function UserDetailPage({ params }) {
             <CardContent className="flex items-center gap-3 py-4">
               <Calendar className="h-5 w-5 text-muted-foreground" />
               <div>
-                <p className="text-sm text-slate-500">Joined</p>
+                <p className="text-sm text-muted-foreground">Joined</p>
                 <p className="font-medium">
                   {joinedDate ? format(new Date(joinedDate), 'MMM yyyy') : 'N/A'}
                 </p>
@@ -175,7 +175,7 @@ export default function UserDetailPage({ params }) {
             <CardContent className="flex items-center gap-3 py-4">
               <Award className="h-5 w-5 text-muted-foreground" />
               <div>
-                <p className="text-sm text-slate-500">Status</p>
+                <p className="text-sm text-muted-foreground">Status</p>
                 <Badge className={user.isActive
                   ? 'bg-green-500/20 text-green-400'
                   : 'bg-red-500/20 text-red-400'
@@ -211,24 +211,24 @@ export default function UserDetailPage({ params }) {
                   </div>
                   <div className="grid grid-cols-2 gap-4 pt-2">
                     <div className="p-3 bg-muted/50 rounded-lg">
-                      <p className="text-sm text-slate-500">Trend</p>
+                      <p className="text-sm text-muted-foreground">Trend</p>
                       <p className={`font-medium capitalize ${getTrendColor()}`}>{trend}</p>
                     </div>
                     <div className="p-3 bg-muted/50 rounded-lg">
-                      <p className="text-sm text-slate-500">Last Review</p>
+                      <p className="text-sm text-muted-foreground">Last Review</p>
                       <p className="font-medium">
                         {lastReviewDate ? format(new Date(lastReviewDate), 'MMM d') : 'N/A'}
                       </p>
                     </div>
                     {perf?.taskCompletionRate !== undefined && (
                       <div className="p-3 bg-muted/50 rounded-lg">
-                        <p className="text-sm text-slate-500">Task Completion</p>
+                        <p className="text-sm text-muted-foreground">Task Completion</p>
                         <p className="font-medium">{Math.round((perf.taskCompletionRate || 0) * 100)}%</p>
                       </div>
                     )}
                     {perf?.deadlineAdherenceRate !== undefined && (
                       <div className="p-3 bg-muted/50 rounded-lg">
-                        <p className="text-sm text-slate-500">Deadline Adherence</p>
+                        <p className="text-sm text-muted-foreground">Deadline Adherence</p>
                         <p className="font-medium">{Math.round((perf.deadlineAdherenceRate || 0) * 100)}%</p>
                       </div>
                     )}
@@ -259,7 +259,7 @@ export default function UserDetailPage({ params }) {
                     <div className="flex items-center gap-3">
                       <Users className="h-4 w-4 text-muted-foreground" />
                       <div>
-                        <p className="text-sm text-slate-500">Reports to</p>
+                        <p className="text-sm text-muted-foreground">Reports to</p>
                         <p className="font-medium">
                           {user.superior?.firstName} {user.superior?.lastName}
                         </p>
@@ -288,7 +288,7 @@ export default function UserDetailPage({ params }) {
               <CardHeader><CardTitle>Direct Reports</CardTitle></CardHeader>
               <CardContent>
                 {!team?.directReports?.length ? (
-                  <p className="text-slate-500 text-center py-8">No direct reports</p>
+                  <p className="text-muted-foreground text-center py-8">No direct reports</p>
                 ) : (
                   <div className="space-y-3">
                     {team.directReports.map((report) => (
@@ -298,7 +298,7 @@ export default function UserDetailPage({ params }) {
                         onClick={() => router.push(`/team/${report._id}`)}
                       >
                         <div className="flex items-center gap-3">
-                          <div className="w-10 h-10 rounded-full bg-slate-700 flex items-center justify-center text-slate-300 font-medium">
+                          <div className="w-10 h-10 rounded-full bg-muted flex items-center justify-center text-foreground font-medium">
                             {report.firstName?.[0]}{report.lastName?.[0]}
                           </div>
                           <div>
@@ -326,7 +326,7 @@ export default function UserDetailPage({ params }) {
               <CardHeader><CardTitle>Recommendations</CardTitle></CardHeader>
               <CardContent>
                 {recommendations.length === 0 ? (
-                  <p className="text-slate-500 text-center py-8">No recommendations yet</p>
+                  <p className="text-muted-foreground text-center py-8">No recommendations yet</p>
                 ) : (
                   <div className="space-y-4">
                     {recommendations.slice(0, 5).map((rec) => (

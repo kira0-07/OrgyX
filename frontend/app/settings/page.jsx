@@ -217,7 +217,7 @@ export default function SettingsPage() {
                   type="button"
                   onClick={handleDarkModeToggle}
                   className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
-                    darkModeState ? 'bg-blue-600' : 'bg-slate-300'
+                    darkModeState ? 'bg-primary' : 'bg-muted-foreground/30'
                   }`}
                 >
                   <span

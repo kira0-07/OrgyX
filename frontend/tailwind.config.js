@@ -14,6 +14,17 @@ module.exports = {
         ring: 'hsl(var(--ring))',
         background: 'hsl(var(--background))',
         foreground: 'hsl(var(--foreground))',
+        surface: 'hsl(var(--surface))',
+        'surface-hover': 'hsl(var(--surface-hover))',
+        rag: {
+          red: 'hsl(var(--rag-red))',
+          amber: 'hsl(var(--rag-amber))',
+          green: 'hsl(var(--rag-green))',
+        },
+        kpi: {
+          up: 'hsl(var(--kpi-up))',
+          down: 'hsl(var(--kpi-down))',
+        },
         primary: {
           DEFAULT: 'hsl(var(--primary))',
           foreground: 'hsl(var(--primary-foreground))',

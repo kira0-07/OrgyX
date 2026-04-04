@@ -159,46 +159,46 @@ export default function TeamPage() {
 
             {/* Your Manager card — static, not clickable for anyone */}
             {teamData?.superior && (
-              <Card className="bg-card border-muted">
-                <CardHeader>
-                  <CardTitle className="text-sm text-muted-foreground">Your Manager</CardTitle>
+              <Card className="bg-surface border-border card-elevated">
+                <CardHeader className="pb-2 border-b border-border/50">
+                  <CardTitle className="text-[10px] uppercase font-bold tracking-wider text-muted-foreground text-center sm:text-left">Reporting To</CardTitle>
                 </CardHeader>
-                <CardContent>
-                  <div className="flex items-center gap-4 p-4 rounded-lg bg-muted/50">
-                    <div className="w-12 h-12 rounded-full bg-slate-700 flex items-center justify-center text-slate-300 text-lg">
+                <CardContent className="pt-4">
+                  <div className="flex items-center gap-4 p-4 rounded-xl bg-surface-hover/30 border border-border/50">
+                    <div className="w-14 h-14 rounded-full bg-primary/10 flex items-center justify-center text-primary font-bold text-xl border border-primary/20">
                       {teamData.superior.firstName?.[0]}{teamData.superior.lastName?.[0]}
                     </div>
                     <div>
-                      <p className="font-medium text-slate-100">
+                      <p className="text-lg font-bold text-foreground">
                         {teamData.superior.firstName} {teamData.superior.lastName}
                       </p>
-                      <p className="text-sm text-muted-foreground">{teamData.superior.role}</p>
+                      <p className="text-sm font-medium text-muted-foreground">{teamData.superior.role}</p>
                     </div>
                   </div>
                 </CardContent>
               </Card>
             )}
 
-            <Card className="bg-card border-muted">
-              <CardHeader>
-                <div className="flex items-center justify-between">
-                  <CardTitle>Direct Reports</CardTitle>
-                  <div className="relative w-64">
-                    <Search className="absolute left-3 top-3 h-4 w-4 text-slate-500" />
+            <Card className="bg-surface border-border card-elevated">
+              <CardHeader className="border-b border-border/50 pb-4">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                  <CardTitle className="text-lg">Direct Reports</CardTitle>
+                  <div className="relative w-full sm:w-72">
+                    <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
                     <Input
                       placeholder="Search team members..."
                       value={search}
                       onChange={(e) => setSearch(e.target.value)}
-                      className="pl-10 bg-muted border-slate-700"
+                      className="pl-10 bg-surface border-border focus-visible:ring-1 focus-visible:ring-primary rounded-full h-9 text-sm"
                     />
                   </div>
                 </div>
               </CardHeader>
-              <CardContent>
+              <CardContent className="pt-4">
                 {filteredReports.length === 0 ? (
-                  <div className="text-center py-12 text-muted-foreground">
-                    <Users className="h-12 w-12 mx-auto mb-4 opacity-50" />
-                    <p>{search ? 'No team members found' : 'No direct reports yet'}</p>
+                  <div className="text-center py-16 text-muted-foreground">
+                    <Users className="h-12 w-12 mx-auto mb-4 opacity-20" />
+                    <p className="font-medium text-foreground">{search ? 'No team members matching your search' : 'No direct reports allocated yet.'}</p>
                   </div>
                 ) : (
                   <div className="space-y-3">
@@ -207,31 +207,31 @@ export default function TeamPage() {
                       return (
                         <div
                           key={member._id}
-                          className="flex items-center justify-between p-4 rounded-lg bg-muted/50 hover:bg-muted cursor-pointer transition-colors group"
+                          className="flex items-center justify-between p-4 rounded-xl bg-surface border border-border hover:border-primary/50 hover:bg-surface-hover/50 hover:shadow-sm cursor-pointer transition-all group"
                           onClick={() => router.push(`/team/${member._id}`)}
                         >
                           <div className="flex items-center gap-4">
-                            <div className="w-12 h-12 rounded-full bg-slate-700 flex items-center justify-center text-slate-300 text-lg">
+                            <div className="w-12 h-12 rounded-full bg-primary/10 flex items-center justify-center text-primary font-bold text-lg border border-primary/20 group-hover:bg-primary group-hover:text-primary-foreground transition-colors">
                               {member.firstName?.[0]}{member.lastName?.[0]}
                             </div>
                             <div>
                               <div className="flex items-center gap-2">
-                                <p className="font-medium text-slate-100">{member.firstName} {member.lastName}</p>
-                                <ArrowUpRight className="h-4 w-4 text-slate-500 opacity-0 group-hover:opacity-100 transition-opacity" />
+                                <p className="font-semibold text-foreground group-hover:text-primary transition-colors">{member.firstName} {member.lastName}</p>
+                                <ArrowUpRight className="h-4 w-4 text-primary opacity-0 group-hover:opacity-100 transition-opacity translate-x-1 translate-y-1 group-hover:translate-x-0 group-hover:translate-y-0" />
                               </div>
-                              <p className="text-sm text-muted-foreground">{member.role}</p>
-                              <p className="text-xs text-slate-500">{member.email}</p>
+                              <p className="text-sm text-muted-foreground font-medium">{member.role}</p>
+                              <p className="text-xs text-muted-foreground/70">{member.email}</p>
                             </div>
                           </div>
-                          <div className="flex items-center gap-2">
-                            <Badge className={isActive ? 'bg-green-500/20 text-green-500' : 'bg-red-500/20 text-red-500'}>
+                          <div className="flex items-center gap-3">
+                            <Badge variant={isActive ? 'rag-green' : 'rag-red'} className="hidden sm:inline-flex shadow-none">
                               {isActive ? 'Active' : 'Inactive'}
                             </Badge>
                             <Button
                               variant="ghost"
                               size="icon"
                               onClick={(e) => { e.stopPropagation(); window.location.href = `mailto:${member.email}`; }}
-                              className="h-8 w-8 text-muted-foreground hover:text-foreground"
+                              className="h-9 w-9 text-muted-foreground hover:text-foreground hover:bg-accent rounded-full bg-surface border border-border"
                             >
                               <Mail className="h-4 w-4" />
                             </Button>
@@ -246,48 +246,57 @@ export default function TeamPage() {
           </div>
 
           <div className="space-y-6">
-            <Card className="bg-card border-muted">
-              <CardHeader><CardTitle>Organization</CardTitle></CardHeader>
-              <CardContent>
-                <div className="h-[300px] overflow-hidden">
+            <Card className="bg-surface border-border card-elevated h-auto flex flex-col">
+              <CardHeader className="border-b border-border/50 pb-4">
+                <CardTitle className="text-lg">Organization</CardTitle>
+              </CardHeader>
+              <CardContent className="flex-1 p-0 relative min-h-[300px]">
+                <div className="absolute inset-0 overflow-hidden bg-surface-hover/20">
                   {orgChartData.length > 0 ? (
                     <OrgChart data={orgChartData} />
                   ) : (
-                    <div className="flex items-center justify-center h-full text-slate-500">
-                      No org chart data
+                    <div className="flex flex-col items-center justify-center h-full text-muted-foreground">
+                      <Users className="w-12 h-12 mb-3 opacity-20" />
+                      <span className="font-medium">No active structure</span>
                     </div>
                   )}
                 </div>
+              </CardContent>
+              <div className="p-4 border-t border-border/50 bg-surface/50">
                 <Button
                   variant="outline"
-                  className="w-full mt-4 border-slate-700"
+                  className="w-full border-border bg-surface hover:bg-surface-hover"
                   onClick={() => router.push('/team/org-chart')}
                 >
-                  View Full Org Chart
+                  Expand Full Screen Structure
                 </Button>
-              </CardContent>
+              </div>
             </Card>
 
-            <Card className="bg-card border-muted">
-              <CardHeader>
-                <CardTitle className="text-sm text-muted-foreground">Team Summary</CardTitle>
+            <Card className="bg-surface border-border card-elevated">
+              <CardHeader className="border-b border-border/50 pb-3">
+                <CardTitle className="text-[10px] uppercase font-bold tracking-wider text-muted-foreground flex items-center gap-2">
+                  <div className="w-2 h-2 rounded-full bg-primary" /> Team Health Metrics
+                </CardTitle>
               </CardHeader>
-              <CardContent className="space-y-4">
-                <div className="flex justify-between items-center">
-                  <span className="text-muted-foreground">Total Members</span>
-                  <span className="font-medium">{teamData?.directReports?.length || 0}</span>
+              <CardContent className="pt-5 space-y-4">
+                <div className="flex justify-between items-center bg-surface-hover/30 p-3 rounded-lg border border-border/50">
+                  <span className="text-sm font-semibold text-foreground">Total Members</span>
+                  <span className="text-xl font-bold font-mono">{teamData?.directReports?.length || 0}</span>
                 </div>
-                <div className="flex justify-between items-center">
-                  <span className="text-muted-foreground">Active</span>
-                  <span className="font-medium text-green-400">
-                    {teamData?.directReports?.filter(m => m.isActive !== false).length || 0}
-                  </span>
-                </div>
-                <div className="flex justify-between items-center">
-                  <span className="text-muted-foreground">Inactive</span>
-                  <span className="font-medium text-slate-500">
-                    {teamData?.directReports?.filter(m => m.isActive === false).length || 0}
-                  </span>
+                <div className="flex items-center gap-3">
+                  <div className="flex-1 bg-surface-hover/30 p-3 rounded-lg border border-border/50 text-center">
+                    <p className="text-[10px] uppercase font-bold tracking-wider text-muted-foreground mb-1">Active</p>
+                    <p className="text-xl font-bold font-mono text-green-500">
+                      {teamData?.directReports?.filter(m => m.isActive !== false).length || 0}
+                    </p>
+                  </div>
+                  <div className="flex-1 bg-surface-hover/30 p-3 rounded-lg border border-border/50 text-center">
+                    <p className="text-[10px] uppercase font-bold tracking-wider text-muted-foreground mb-1">Inactive</p>
+                    <p className="text-xl font-bold font-mono text-red-500">
+                      {teamData?.directReports?.filter(m => m.isActive === false).length || 0}
+                    </p>
+                  </div>
                 </div>
               </CardContent>
             </Card>
@@ -299,7 +308,7 @@ export default function TeamPage() {
       {showModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center">
           <div className="fixed inset-0 bg-black/60" onClick={() => setShowModal(false)} />
-          <div className="relative z-50 bg-card border border-slate-700 rounded-xl p-6 w-full max-w-md mx-4 space-y-4 max-h-[90vh] overflow-y-auto">
+          <div className="relative z-50 bg-card border border-border rounded-xl p-6 w-full max-w-md mx-4 space-y-4 max-h-[90vh] overflow-y-auto">
             <div className="flex items-center justify-between">
               <h2 className="text-xl font-bold">Add Team Member</h2>
               <Button variant="ghost" size="icon" onClick={() => setShowModal(false)}>
@@ -315,7 +324,7 @@ export default function TeamPage() {
                     placeholder="John"
                     value={form.firstName}
                     onChange={e => setForm({ ...form, firstName: e.target.value })}
-                    className="bg-muted border-slate-700"
+                    className="bg-muted border-border"
                   />
                 </div>
                 <div>
@@ -324,7 +333,7 @@ export default function TeamPage() {
                     placeholder="Doe"
                     value={form.lastName}
                     onChange={e => setForm({ ...form, lastName: e.target.value })}
-                    className="bg-muted border-slate-700"
+                    className="bg-muted border-border"
                   />
                 </div>
               </div>
@@ -336,7 +345,7 @@ export default function TeamPage() {
                   placeholder="john@company.com"
                   value={form.email}
                   onChange={e => setForm({ ...form, email: e.target.value })}
-                  className="bg-muted border-slate-700"
+                  className="bg-muted border-border"
                 />
               </div>
 
@@ -347,18 +356,18 @@ export default function TeamPage() {
                   placeholder="Min 6 characters"
                   value={form.password}
                   onChange={e => setForm({ ...form, password: e.target.value })}
-                  className="bg-muted border-slate-700"
+                  className="bg-muted border-border"
                 />
               </div>
 
               <div>
                 <label className="text-sm text-muted-foreground mb-1 block">
-                  Role * {!isAdmin && <span className="text-xs text-slate-500">(roles below your level only)</span>}
+                  Role * {!isAdmin && <span className="text-xs text-muted-foreground">(roles below your level only)</span>}
                 </label>
                 <select
                   value={form.role}
                   onChange={e => setForm({ ...form, role: e.target.value })}
-                  className="w-full rounded-md bg-muted border border-slate-700 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:ring-2 focus:ring-primary"
+                  className="w-full rounded-md bg-muted border border-border px-3 py-2 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-primary"
                 >
                   {availableRoles.length > 0 ? (
                     availableRoles.map(r => <option key={r} value={r}>{r}</option>)
@@ -370,7 +379,7 @@ export default function TeamPage() {
             </div>
 
             <div className="flex gap-3 pt-2">
-              <Button variant="outline" className="flex-1 border-slate-700" onClick={() => setShowModal(false)}>
+              <Button variant="outline" className="flex-1 border-border" onClick={() => setShowModal(false)}>
                 Cancel
               </Button>
               <Button

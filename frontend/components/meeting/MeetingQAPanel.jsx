@@ -72,9 +72,9 @@ export default function MeetingQAPanel({ meetingId, meetingName }) {
       <div className="flex-1 min-h-0 overflow-y-auto px-4 py-3">
         {messages.length === 0 ? (
           <div className="h-full flex flex-col items-center justify-center text-center gap-2">
-            <MessageSquare className="h-10 w-10 text-slate-600" />
+            <MessageSquare className="h-10 w-10 text-muted-foreground" />
             <p className="text-muted-foreground text-sm">Ask questions about the meeting</p>
-            <p className="text-xs text-slate-500">
+            <p className="text-xs text-muted-foreground">
               Try: "What were the key decisions?" or "What action items were assigned?"
             </p>
           </div>
@@ -90,7 +90,7 @@ export default function MeetingQAPanel({ meetingId, meetingName }) {
                 </div>
                 <div className={cn(
                   'max-w-[80%] rounded-lg px-3 py-2 text-sm',
-                  message.type === 'user' ? 'bg-blue-500/20 text-slate-100' : 'bg-muted text-foreground'
+                  message.type === 'user' ? 'bg-primary/20 text-foreground' : 'bg-muted text-foreground'
                 )}>
                   {message.type === 'assistant' ? (
                     <ReactMarkdown className="prose prose-invert prose-sm max-w-none prose-p:my-1 prose-strong:text-white prose-ul:my-1 prose-li:my-0">
@@ -112,7 +112,7 @@ export default function MeetingQAPanel({ meetingId, meetingName }) {
                           const score = source?.relevanceScore
                             ? ` · ${Math.round(source.relevanceScore * 100)}%` : '';
                           return (
-                            <Badge key={i} variant="outline" className="text-xs border-slate-700 text-muted-foreground">
+                            <Badge key={i} variant="outline" className="text-xs border-border text-muted-foreground">
                               {label}{score}
                             </Badge>
                           );
@@ -146,13 +146,13 @@ export default function MeetingQAPanel({ meetingId, meetingName }) {
             onChange={(e) => setInput(e.target.value)}
             placeholder="Ask a question..."
             disabled={isLoading || isStreaming}
-            className="bg-muted border-slate-700 text-sm"
+            className="bg-muted border-border text-sm"
           />
           <Button type="submit" disabled={!input.trim() || isLoading || isStreaming} size="icon">
             {isLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
           </Button>
         </form>
-        <p className="text-xs text-slate-500 mt-2 flex items-center gap-1">
+        <p className="text-xs text-muted-foreground mt-2 flex items-center gap-1">
           <AlertCircle className="h-3 w-3" />
           Answers are generated from meeting transcripts using RAG
         </p>

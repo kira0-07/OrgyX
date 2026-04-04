@@ -22,6 +22,7 @@ import AttendeeContributionCard from '@/components/meeting/AttendeeContributionC
 import ProcessingStepIndicator from '@/components/meeting/ProcessingStepIndicator';
 import MeetingQAPanel from '@/components/meeting/MeetingQAPanel';
 import SimilarMeetingsPanel from '@/components/meeting/SimilarMeetingsPanel';
+import MeetingSummaryPanel from '@/components/meeting/MeetingSummaryPanel';
 import toast from 'react-hot-toast';
 
 export default function MeetingDetailPage({ params }) {
@@ -353,8 +354,8 @@ export default function MeetingDetailPage({ params }) {
       case 'scheduled': return 'bg-blue-500/20 text-blue-400';
       case 'live': return 'bg-red-500/20 text-red-400';
       case 'cancelled': return 'bg-red-900/20 text-red-700';
-      case 'completed': return 'bg-slate-500/20 text-muted-foreground';
-      default: return 'bg-slate-500/20 text-muted-foreground';
+      case 'completed': return 'bg-muted text-muted-foreground';
+      default: return 'bg-muted text-muted-foreground';
     }
   };
 
@@ -365,7 +366,7 @@ export default function MeetingDetailPage({ params }) {
       'Architecture Discussion': 'bg-purple-500/20 text-purple-400',
       '1:1': 'bg-yellow-500/20 text-yellow-400',
       'All-Hands': 'bg-red-500/20 text-red-400',
-      'Custom': 'bg-slate-500/20 text-muted-foreground'
+      'Custom': 'bg-muted text-muted-foreground'
     };
     return colors[domain] || colors['Custom'];
   };
@@ -394,7 +395,7 @@ export default function MeetingDetailPage({ params }) {
     return (
       <DashboardLayout>
         <div className="text-center py-12">
-          <AlertCircle className="h-12 w-12 mx-auto mb-4 text-slate-500" />
+          <AlertCircle className="h-12 w-12 mx-auto mb-4 text-muted-foreground" />
           <p className="text-muted-foreground">Meeting not found</p>
           <Button className="mt-4" onClick={() => router.push('/meetings/history')}>Back to Meetings</Button>
         </div>
@@ -408,11 +409,11 @@ export default function MeetingDetailPage({ params }) {
 
         {showEndConfirm && (
           <div style={{ position: 'fixed', inset: 0, zIndex: 50, background: 'rgba(0,0,0,0.6)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-            <div className="bg-slate-900 border border-slate-700 rounded-xl p-6 w-full max-w-sm mx-4">
-              <h2 className="text-lg font-semibold mb-2 text-white">End this meeting?</h2>
-              <p className="text-slate-400 text-sm mb-6">This will end the meeting for all participants and cannot be undone.</p>
+            <div className="bg-card border border-border rounded-xl p-6 w-full max-w-sm mx-4">
+              <h2 className="text-lg font-semibold mb-2 text-foreground">End this meeting?</h2>
+              <p className="text-muted-foreground text-sm mb-6">This will end the meeting for all participants and cannot be undone.</p>
               <div className="flex gap-3 justify-end">
-                <Button variant="outline" onClick={() => setShowEndConfirm(false)} className="border-slate-700">Cancel</Button>
+                <Button variant="outline" onClick={() => setShowEndConfirm(false)} className="border-border text-foreground hover:bg-muted">Cancel</Button>
                 <Button onClick={handleEndMeeting} disabled={isEnding} className="bg-red-600 hover:bg-red-700">
                   {isEnding && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
                   Yes, end meeting
@@ -423,9 +424,9 @@ export default function MeetingDetailPage({ params }) {
         )}
 
         {meeting.status === 'cancelled' && (
-          <div className="bg-red-900/20 border border-red-800/50 rounded-lg p-4 flex items-center gap-3">
+          <div className="bg-destructive/20 border border-destructive/50 rounded-lg p-4 flex items-center gap-3">
             <AlertCircle className="h-5 w-5 text-red-400 shrink-0" />
-            <p className="text-red-300 text-sm">This meeting has been cancelled by the host.</p>
+            <p className="text-destructive text-sm">This meeting has been cancelled by the host.</p>
           </div>
         )}
 
@@ -441,8 +442,8 @@ export default function MeetingDetailPage({ params }) {
             </div>
           </div>
           <div className="flex gap-2 flex-wrap">
-            {isReady && (<Button variant="outline" onClick={handleExportPDF} className="border-slate-700"><Download className="mr-2 h-4 w-4" />Export PDF</Button>)}
-            {isReady && (<Button variant="outline" onClick={handleExportDOCX} className="border-slate-700"><FileDown className="mr-2 h-4 w-4" />Export DOCX</Button>)}
+            {isReady && (<Button variant="outline" onClick={handleExportPDF} className="border-border text-foreground hover:bg-muted"><Download className="mr-2 h-4 w-4" />Export PDF</Button>)}
+            {isReady && (<Button variant="outline" onClick={handleExportDOCX} className="border-border text-foreground hover:bg-muted"><FileDown className="mr-2 h-4 w-4" />Export DOCX</Button>)}
             {meeting.status === 'scheduled' && (<Button onClick={() => router.push(`/meetings/${meeting._id}/room`)} className="bg-green-600 hover:bg-green-700"><Mic className="mr-2 h-4 w-4" />Join Meeting</Button>)}
             {meeting.status === 'live' && (<Button onClick={() => router.push(`/meetings/${meeting._id}/room`)} className="bg-green-600 hover:bg-green-700"><Mic className="mr-2 h-4 w-4" />Rejoin Meeting</Button>)}
             {(meeting.status === 'live' || meeting.status === 'scheduled') && isHost && (
@@ -452,7 +453,7 @@ export default function MeetingDetailPage({ params }) {
               </Button>
             )}
             {['ready', 'completed', 'processing'].includes(meeting.status) && (
-              <Button variant="outline" className="border-slate-700" onClick={() => setActiveTab('summary')}><FileText className="mr-2 h-4 w-4" />View Summary</Button>
+              <Button variant="outline" className="border-border text-foreground hover:bg-muted" onClick={() => setActiveTab('summary')}><FileText className="mr-2 h-4 w-4" />View Summary</Button>
             )}
             {isReady && (<Button onClick={() => router.push(`/meetings/${meeting._id}/schedule-followup`)} className="bg-blue-600 hover:bg-blue-700"><Plus className="mr-2 h-4 w-4" />Schedule Follow-up</Button>)}
           </div>
@@ -467,10 +468,10 @@ export default function MeetingDetailPage({ params }) {
         )}
 
         <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-          <Card className="bg-card border-muted"><CardContent className="flex items-center gap-3 py-4"><Calendar className="h-5 w-5 text-muted-foreground" /><div><p className="text-sm text-slate-500">Date</p><p className="font-medium">{format(new Date(meeting.scheduledDate), 'MMM d, yyyy')}</p></div></CardContent></Card>
-          <Card className="bg-card border-muted"><CardContent className="flex items-center gap-3 py-4"><Clock className="h-5 w-5 text-muted-foreground" /><div><p className="text-sm text-slate-500">Duration</p><p className="font-medium">{meeting.actualDuration || meeting.estimatedDuration || 0} min</p></div></CardContent></Card>
-          <Card className="bg-card border-muted"><CardContent className="flex items-center gap-3 py-4"><Users className="h-5 w-5 text-muted-foreground" /><div><p className="text-sm text-slate-500">Attendees</p><p className="font-medium">{meeting.attendees?.length || 0}</p></div></CardContent></Card>
-          <Card className="bg-card border-muted"><CardContent className="flex items-center gap-3 py-4"><Mic className="h-5 w-5 text-muted-foreground" /><div><p className="text-sm text-slate-500">Type</p><Badge className={getDomainColor(meeting.domain)}>{meeting.domain}</Badge></div></CardContent></Card>
+          <Card className="bg-card border-muted"><CardContent className="flex items-center gap-3 py-4"><Calendar className="h-5 w-5 text-muted-foreground" /><div><p className="text-sm text-muted-foreground">Date</p><p className="font-medium">{format(new Date(meeting.scheduledDate), 'MMM d, yyyy')}</p></div></CardContent></Card>
+          <Card className="bg-card border-muted"><CardContent className="flex items-center gap-3 py-4"><Clock className="h-5 w-5 text-muted-foreground" /><div><p className="text-sm text-muted-foreground">Duration</p><p className="font-medium">{meeting.actualDuration || meeting.estimatedDuration || 0} min</p></div></CardContent></Card>
+          <Card className="bg-card border-muted"><CardContent className="flex items-center gap-3 py-4"><Users className="h-5 w-5 text-muted-foreground" /><div><p className="text-sm text-muted-foreground">Attendees</p><p className="font-medium">{meeting.attendees?.length || 0}</p></div></CardContent></Card>
+          <Card className="bg-card border-muted"><CardContent className="flex items-center gap-3 py-4"><Mic className="h-5 w-5 text-muted-foreground" /><div><p className="text-sm text-muted-foreground">Type</p><Badge className={getDomainColor(meeting.domain)}>{meeting.domain}</Badge></div></CardContent></Card>
         </div>
 
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
@@ -484,20 +485,7 @@ export default function MeetingDetailPage({ params }) {
               </TabsList>
 
               <TabsContent value="summary">
-                <Card className="bg-card border-muted">
-                  <CardHeader><CardTitle className="flex items-center gap-2"><FileText className="h-5 w-5" />Meeting Summary</CardTitle></CardHeader>
-                  <CardContent className="space-y-4">
-                    {meeting.summary ? (
-                      <>
-                        <p className="text-slate-300">{meeting.summary}</p>
-                        {meeting.conclusions?.length > 0 && (<div><p className="font-medium mb-2">Key Conclusions:</p><ul className="list-disc list-inside space-y-1 text-muted-foreground">{meeting.conclusions.map((c, i) => <li key={i}>{c}</li>)}</ul></div>)}
-                        {meeting.decisions?.length > 0 && (<div><p className="font-medium mb-2">Decisions:</p><ul className="list-disc list-inside space-y-1 text-muted-foreground">{meeting.decisions.map((d, i) => <li key={i}>{d}</li>)}</ul></div>)}
-                      </>
-                    ) : (
-                      <p className="text-slate-500">{isProcessing ? 'Summary will be available after processing...' : meeting.status === 'cancelled' ? 'Meeting was cancelled — no summary available.' : 'No summary available'}</p>
-                    )}
-                  </CardContent>
-                </Card>
+                <MeetingSummaryPanel meeting={meeting} isProcessing={isProcessing} />
               </TabsContent>
 
               <TabsContent value="transcript">
@@ -516,7 +504,7 @@ export default function MeetingDetailPage({ params }) {
                   <CardContent>
                     {transcriptSegments.length > 0 ? (
                       <div className="space-y-2">
-                        <p className="text-xs text-slate-500 mb-3">AI has assigned speakers. Click any name to correct it.</p>
+                        <p className="text-xs text-muted-foreground mb-3">AI has assigned speakers. Click any name to correct it.</p>
                         <ScrollArea className="h-[400px]">
                           <div className="space-y-3 pr-2">
                             {/* ── FIX: Group consecutive same-speaker segments into one dialogue box ── */}
@@ -547,31 +535,31 @@ export default function MeetingDetailPage({ params }) {
                                             // Correct all segments in this group at once
                                             group.texts.forEach(t => handleSpeakerChange(t.idx, e.target.value));
                                           }}
-                                          className="text-sm bg-slate-700 border border-slate-600 rounded px-2 py-0.5 text-slate-200 focus:outline-none"
+                                          className="text-sm bg-background border border-border rounded px-2 py-0.5 text-foreground focus:outline-none"
                                         >
                                           {attendeeNameList.map(name => (
                                             <option key={name} value={name}>{name}</option>
                                           ))}
                                           <option value="Unknown Speaker">Unknown Speaker</option>
                                         </select>
-                                        <button onClick={() => setEditingSegmentIdx(null)} className="text-slate-400 hover:text-slate-200 ml-1">
+                                        <button onClick={() => setEditingSegmentIdx(null)} className="text-muted-foreground hover:text-foreground ml-1">
                                           <X className="h-3 w-3" />
                                         </button>
                                       </div>
                                     ) : (
                                       <button
                                         onClick={() => setEditingSegmentIdx(group.firstIdx)}
-                                        className={`flex items-center gap-1 font-medium text-sm hover:opacity-80 ${speakerColorMap[group.speaker] || 'text-slate-400'}`}
+                                        className={`flex items-center gap-1 font-medium text-sm hover:opacity-80 ${speakerColorMap[group.speaker] || 'text-muted-foreground'}`}
                                         title="Click to correct speaker"
                                       >
                                         {group.speaker}
                                         <Pencil className="h-3 w-3 opacity-0 group-hover:opacity-60 transition-opacity" />
                                       </button>
                                     )}
-                                    <span className="text-xs text-slate-500">{formatTime(group.startTime)}</span>
+                                    <span className="text-xs text-muted-foreground">{formatTime(group.startTime)}</span>
                                   </div>
                                   {/* All sentences joined — one readable paragraph per speaker turn */}
-                                  <p className="text-slate-300 text-sm leading-relaxed">
+                                  <p className="text-foreground text-sm leading-relaxed">
                                     {group.texts.map(t => t.text).join(' ')}
                                   </p>
                                 </div>
@@ -583,12 +571,12 @@ export default function MeetingDetailPage({ params }) {
                     ) : meeting?.transcriptRaw ? (
                       <ScrollArea className="h-[400px]">
                         <div className="p-3 bg-muted/50 rounded-lg">
-                          <p className="text-xs text-slate-500 mb-2">Speaker detection not available — showing raw transcript.</p>
-                          <p className="text-slate-300 whitespace-pre-wrap text-sm">{meeting.transcriptRaw}</p>
+                          <p className="text-xs text-muted-foreground mb-2">Speaker detection not available — showing raw transcript.</p>
+                          <p className="text-foreground whitespace-pre-wrap text-sm">{meeting.transcriptRaw}</p>
                         </div>
                       </ScrollArea>
                     ) : (
-                      <p className="text-slate-500">{isProcessing ? 'Transcript will be available after processing...' : 'No transcript available'}</p>
+                      <p className="text-muted-foreground">{isProcessing ? 'Transcript will be available after processing...' : 'No transcript available'}</p>
                     )}
                   </CardContent>
                 </Card>
@@ -616,12 +604,12 @@ export default function MeetingDetailPage({ params }) {
                         {meeting.actionItems.map((item, i) => (
                           <div key={i} className="flex items-start gap-3 p-3 bg-muted/50 rounded-lg">
                             <div className="mt-1">
-                              <div className={`w-5 h-5 rounded border-2 flex items-center justify-center ${item.status === 'completed' ? 'bg-green-500 border-green-500' : 'border-slate-600'}`}>
+                              <div className={`w-5 h-5 rounded border-2 flex items-center justify-center ${item.status === 'completed' ? 'bg-green-500 border-green-500' : 'border-border'}`}>
                                 {item.status === 'completed' && <CheckSquare className="h-3 w-3 text-white" />}
                               </div>
                             </div>
                             <div className="flex-1">
-                              <p className={item.status === 'completed' ? 'line-through text-slate-500' : ''}>{item.task}</p>
+                              <p className={item.status === 'completed' ? 'line-through text-muted-foreground' : ''}>{item.task}</p>
                               {item.owner && <p className="text-sm text-muted-foreground">Assigned to: {item.owner.firstName} {item.owner.lastName}</p>}
                               {item.deadline && <p className="text-sm text-muted-foreground">Due: {format(new Date(item.deadline), 'MMM d, yyyy')}</p>}
                             </div>
@@ -632,7 +620,7 @@ export default function MeetingDetailPage({ params }) {
                         ))}
                       </div>
                     ) : (
-                      <p className="text-slate-500">No action items extracted</p>
+                      <p className="text-muted-foreground">No action items extracted</p>
                     )}
                   </CardContent>
                 </Card>

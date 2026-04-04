@@ -91,7 +91,7 @@ export default function TasksPage() {
       case 'urgent': return 'bg-red-500/20 text-red-500';
       case 'high': return 'bg-orange-500/20 text-orange-500';
       case 'medium': return 'bg-blue-500/20 text-blue-500';
-      default: return 'bg-slate-500/20 text-muted-foreground';
+      default: return 'bg-muted text-muted-foreground';
     }
   };
 
@@ -100,7 +100,7 @@ export default function TasksPage() {
       case 'done': return 'bg-green-500/20 text-green-500';
       case 'in_progress': return 'bg-yellow-500/20 text-yellow-500';
       case 'in_review': return 'bg-purple-500/20 text-purple-500';
-      default: return 'bg-slate-500/20 text-muted-foreground';
+      default: return 'bg-muted text-muted-foreground';
     }
   };
 
@@ -137,7 +137,7 @@ export default function TasksPage() {
                 {tasks.map((task) => (
                   <div key={task._id} className="flex items-center justify-between p-4 rounded-lg bg-muted/50 hover:bg-muted transition-colors">
                     <div className="flex-1">
-                      <p className="font-medium text-slate-100">{task.title}</p>
+                      <p className="font-medium text-foreground">{task.title}</p>
                       <p className="text-sm text-muted-foreground mt-1">
                         {task.assignee ? `${task.assignee.firstName} ${task.assignee.lastName}` : 'Unassigned'}
                         {task.dueDate && ` · Due ${new Date(task.dueDate).toLocaleDateString()}`}
@@ -150,7 +150,7 @@ export default function TasksPage() {
                         <Button
                           size="sm"
                           variant="outline"
-                          className="border-slate-700 text-xs"
+                          className="border-border text-xs"
                           onClick={() => handleStatusChange(task._id, nextStatus(task.status))}
                         >
                           {task.status === 'todo' || task.status === 'backlog' ? 'Start' :
@@ -170,7 +170,7 @@ export default function TasksPage() {
       {showModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center">
           <div className="fixed inset-0 bg-black/60" onClick={() => setShowModal(false)} />
-          <div className="relative z-50 bg-card border border-slate-700 rounded-xl p-6 w-full max-w-md mx-4 space-y-4">
+          <div className="relative z-50 bg-card border border-border rounded-xl p-6 w-full max-w-md mx-4 space-y-4">
             <div className="flex items-center justify-between">
               <h2 className="text-xl font-bold">New Task</h2>
               <Button variant="ghost" size="icon" onClick={() => setShowModal(false)}>
@@ -185,7 +185,7 @@ export default function TasksPage() {
                   placeholder="Task title"
                   value={form.title}
                   onChange={e => setForm({ ...form, title: e.target.value })}
-                  className="bg-muted border-slate-700"
+                  className="bg-muted border-border"
                 />
               </div>
 
@@ -195,7 +195,7 @@ export default function TasksPage() {
                   placeholder="Task description"
                   value={form.description}
                   onChange={e => setForm({ ...form, description: e.target.value })}
-                  className="w-full rounded-md bg-muted border border-slate-700 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-primary min-h-[80px]"
+                  className="w-full rounded-md bg-muted border border-border px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary min-h-[80px]"
                 />
               </div>
 
@@ -204,7 +204,7 @@ export default function TasksPage() {
                 <select
                   value={form.priority}
                   onChange={e => setForm({ ...form, priority: e.target.value })}
-                  className="w-full rounded-md bg-muted border border-slate-700 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:ring-2 focus:ring-primary"
+                  className="w-full rounded-md bg-muted border border-border px-3 py-2 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-primary"
                 >
                   <option value="low">Low</option>
                   <option value="medium">Medium</option>
@@ -219,7 +219,7 @@ export default function TasksPage() {
                   <select
                     value={form.assignee}
                     onChange={e => setForm({ ...form, assignee: e.target.value })}
-                    className="w-full rounded-md bg-muted border border-slate-700 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:ring-2 focus:ring-primary"
+                    className="w-full rounded-md bg-muted border border-border px-3 py-2 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-primary"
                   >
                     <option value="">Assign to myself</option>
                     {directReports.map(r => (
@@ -237,13 +237,13 @@ export default function TasksPage() {
                   type="date"
                   value={form.dueDate}
                   onChange={e => setForm({ ...form, dueDate: e.target.value })}
-                  className="bg-muted border-slate-700"
+                  className="bg-muted border-border"
                 />
               </div>
             </div>
 
             <div className="flex gap-3 pt-2">
-              <Button variant="outline" className="flex-1 border-slate-700" onClick={() => setShowModal(false)}>
+              <Button variant="outline" className="flex-1 border-border" onClick={() => setShowModal(false)}>
                 Cancel
               </Button>
               <Button className="flex-1" onClick={handleSubmit} disabled={submitting}>

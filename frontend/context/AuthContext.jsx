@@ -6,7 +6,7 @@ import useAuthStore from '@/store/authStore';
 
 const AuthContext = createContext();
 
-const PUBLIC_ROUTES = ['/login', '/forgot-password', '/reset-password'];
+const PUBLIC_ROUTES = ['/', '/login', '/forgot-password', '/reset-password'];
 
 const ROUTE_PERMISSIONS = {
   '/dashboard/admin': (user) => user?.isAdmin,
@@ -31,7 +31,7 @@ export function AuthProvider({ children }) {
         // No token — clear any stale state and redirect if on protected route
         useAuthStore.getState().logout();
         setInitialized(true);
-        if (!PUBLIC_ROUTES.some(r => pathname?.startsWith(r))) {
+        if (!PUBLIC_ROUTES.some(r => r === '/' ? pathname === '/' : pathname?.startsWith(r))) {
           router.replace('/login');
         }
         return;
@@ -47,7 +47,7 @@ export function AuthProvider({ children }) {
         localStorage.removeItem('accessToken');
         localStorage.removeItem('user');
         setInitialized(true);
-        if (!PUBLIC_ROUTES.some(r => pathname?.startsWith(r))) {
+        if (!PUBLIC_ROUTES.some(r => r === '/' ? pathname === '/' : pathname?.startsWith(r))) {
           router.replace('/login');
         }
         return;

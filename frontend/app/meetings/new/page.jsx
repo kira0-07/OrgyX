@@ -3,24 +3,25 @@
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import DashboardLayout from '@/components/layout/DashboardLayout';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { Loader2, Search } from 'lucide-react';
+import { Badge } from '@/components/ui/badge';
+import { Loader2, Search, Calendar, Clock, Users, Video, Link2, LayoutGrid, X, CheckCircle2 } from 'lucide-react';
 import api from '@/lib/axios';
 import { useAuth } from '@/context/AuthContext';
 import toast from 'react-hot-toast';
 
 const meetingDomains = [
-  'Sprint Planning',
-  'Performance Review',
-  'Architecture Discussion',
-  '1:1',
-  'All-Hands',
-  'Custom'
+  { value: 'Sprint Planning', icon: '🏃', color: 'bg-blue-500/15 text-blue-400' },
+  { value: 'Performance Review', icon: '📊', color: 'bg-amber-500/15 text-amber-400' },
+  { value: 'Architecture Discussion', icon: '🏗️', color: 'bg-purple-500/15 text-purple-400' },
+  { value: '1:1', icon: '👥', color: 'bg-green-500/15 text-green-400' },
+  { value: 'All-Hands', icon: '🎯', color: 'bg-red-500/15 text-red-400' },
+  { value: 'Custom', icon: '⚡', color: 'bg-muted text-muted-foreground' },
 ];
 
 export default function NewMeetingPage() {
@@ -46,11 +47,9 @@ export default function NewMeetingPage() {
 
   const fetchOrgTreeUsers = async () => {
     try {
-      // Fetch users in org tree — backend already filters by access
       const response = await api.get('/users?limit=100');
       const allUsers = response.data.users || [];
       const myId = (user?._id || user?.id)?.toString();
-      // Exclude self from attendee list
       setUsers(allUsers.filter(u => u._id?.toString() !== myId));
     } catch (error) {
       console.error('Failed to fetch users:', error);
@@ -89,176 +88,290 @@ export default function NewMeetingPage() {
     }));
   };
 
+  const removeAttendee = (userId) => {
+    setFormData(prev => ({
+      ...prev,
+      attendees: prev.attendees.filter(id => id !== userId)
+    }));
+  };
+
   const filteredUsers = users.filter(u =>
     `${u.firstName} ${u.lastName} ${u.role}`.toLowerCase()
       .includes(searchUsers.toLowerCase())
   );
 
+  const selectedDomain = meetingDomains.find(d => d.value === formData.domain);
+
   return (
     <DashboardLayout>
-      <div className="max-w-2xl mx-auto">
-        <Card className="bg-slate-900 border-slate-800">
-          <CardHeader>
-            <CardTitle>Schedule New Meeting</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <form onSubmit={handleSubmit} className="space-y-5">
+      <div className="max-w-3xl mx-auto space-y-6">
+        {/* Header */}
+        <div className="space-y-1">
+          <h1 className="text-2xl font-bold tracking-tight text-foreground">Schedule a Meeting</h1>
+          <p className="text-muted-foreground">Set up a new meeting with your team members</p>
+        </div>
+
+        <form onSubmit={handleSubmit} className="space-y-6">
+          {/* Meeting Details Card */}
+          <Card className="bg-card border-border shadow-sm">
+            <CardHeader className="pb-4">
+              <CardTitle className="flex items-center gap-2 text-base">
+                <Calendar className="h-4 w-4 text-primary" />
+                Meeting Details
+              </CardTitle>
+              <CardDescription>Basic information about the meeting</CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-5">
               <div className="space-y-2">
-                <Label htmlFor="name">Meeting Name *</Label>
+                <Label htmlFor="name" className="text-foreground">Meeting Name <span className="text-destructive">*</span></Label>
                 <Input
                   id="name"
+                  placeholder="e.g. Sprint 14 Planning Session"
                   value={formData.name}
                   onChange={(e) => setFormData({ ...formData, name: e.target.value })}
-                  className="bg-slate-800 border-slate-700"
+                  className="bg-muted border-border text-foreground placeholder:text-muted-foreground"
                   required
                 />
               </div>
 
               <div className="space-y-2">
-                <Label htmlFor="description">Description</Label>
+                <Label htmlFor="description" className="text-foreground">Description</Label>
                 <Textarea
                   id="description"
+                  placeholder="Brief description of the meeting objectives..."
                   value={formData.description}
                   onChange={(e) => setFormData({ ...formData, description: e.target.value })}
-                  className="bg-slate-800 border-slate-700"
+                  className="bg-muted border-border text-foreground placeholder:text-muted-foreground resize-none"
                   rows={3}
                 />
               </div>
 
-              <div className="grid grid-cols-2 gap-4">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div className="space-y-2">
-                  <Label htmlFor="scheduledDate">Date & Time *</Label>
+                  <Label htmlFor="scheduledDate" className="text-foreground flex items-center gap-1.5">
+                    <Clock className="h-3.5 w-3.5 text-muted-foreground" />
+                    Date & Time <span className="text-destructive">*</span>
+                  </Label>
                   <Input
                     id="scheduledDate"
                     type="datetime-local"
                     value={formData.scheduledDate}
                     onChange={(e) => setFormData({ ...formData, scheduledDate: e.target.value })}
-                    className="bg-slate-800 border-slate-700"
+                    className="bg-muted border-border text-foreground"
                     required
                   />
                 </div>
                 <div className="space-y-2">
-                  <Label htmlFor="estimatedDuration">Duration (minutes)</Label>
+                  <Label htmlFor="estimatedDuration" className="text-foreground">Duration (minutes)</Label>
                   <Input
                     id="estimatedDuration"
                     type="number"
                     min="1"
                     value={formData.estimatedDuration}
                     onChange={(e) => setFormData({ ...formData, estimatedDuration: e.target.value })}
-                    className="bg-slate-800 border-slate-700"
+                    className="bg-muted border-border text-foreground"
                   />
                 </div>
               </div>
+            </CardContent>
+          </Card>
 
-              <div className="space-y-2">
-                <Label>Domain *</Label>
-                <Select
-                  value={formData.domain}
-                  onValueChange={(value) => setFormData({ ...formData, domain: value })}
-                >
-                  <SelectTrigger className="bg-slate-800 border-slate-700">
-                    <SelectValue placeholder="Select a domain" />
-                  </SelectTrigger>
-                  <SelectContent className="bg-slate-800 border-slate-700">
-                    {meetingDomains.map((domain) => (
-                      <SelectItem key={domain} value={domain}>{domain}</SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+          {/* Domain Selection Card */}
+          <Card className="bg-card border-border shadow-sm">
+            <CardHeader className="pb-4">
+              <CardTitle className="flex items-center gap-2 text-base">
+                <LayoutGrid className="h-4 w-4 text-primary" />
+                Meeting Type
+              </CardTitle>
+              <CardDescription>Select the domain for this meeting</CardDescription>
+            </CardHeader>
+            <CardContent>
+              <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+                {meetingDomains.map((domain) => (
+                  <button
+                    key={domain.value}
+                    type="button"
+                    onClick={() => setFormData({ ...formData, domain: domain.value })}
+                    className={`flex items-center gap-2.5 p-3 rounded-lg border-2 transition-all duration-200 text-left ${
+                      formData.domain === domain.value
+                        ? 'border-primary bg-primary/10 shadow-sm'
+                        : 'border-border bg-muted/50 hover:border-muted-foreground/30 hover:bg-muted'
+                    }`}
+                  >
+                    <span className="text-lg">{domain.icon}</span>
+                    <span className={`text-sm font-medium ${
+                      formData.domain === domain.value ? 'text-primary' : 'text-foreground'
+                    }`}>
+                      {domain.value}
+                    </span>
+                  </button>
+                ))}
               </div>
+            </CardContent>
+          </Card>
 
+          {/* Agenda & Link Card */}
+          <Card className="bg-card border-border shadow-sm">
+            <CardHeader className="pb-4">
+              <CardTitle className="flex items-center gap-2 text-base">
+                <Video className="h-4 w-4 text-primary" />
+                Agenda & Links
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-5">
               <div className="space-y-2">
-                <Label htmlFor="agenda">Agenda</Label>
+                <Label htmlFor="agenda" className="text-foreground">Agenda</Label>
                 <Textarea
                   id="agenda"
                   value={formData.agenda}
                   onChange={(e) => setFormData({ ...formData, agenda: e.target.value })}
-                  className="bg-slate-800 border-slate-700"
+                  className="bg-muted border-border text-foreground placeholder:text-muted-foreground resize-none"
                   rows={3}
-                  placeholder="Topics to discuss..."
+                  placeholder="• Topic 1&#10;• Topic 2&#10;• Topic 3"
                 />
               </div>
 
               <div className="space-y-2">
-                <Label htmlFor="externalLink">External Link (Optional)</Label>
+                <Label htmlFor="externalLink" className="text-foreground flex items-center gap-1.5">
+                  <Link2 className="h-3.5 w-3.5 text-muted-foreground" />
+                  External Link
+                  <span className="text-xs text-muted-foreground font-normal">(Optional)</span>
+                </Label>
                 <Input
                   id="externalLink"
                   type="url"
                   placeholder="https://zoom.us/j/..."
                   value={formData.externalLink}
                   onChange={(e) => setFormData({ ...formData, externalLink: e.target.value })}
-                  className="bg-slate-800 border-slate-700"
+                  className="bg-muted border-border text-foreground placeholder:text-muted-foreground"
+                />
+              </div>
+            </CardContent>
+          </Card>
+
+          {/* Attendees Card */}
+          <Card className="bg-card border-border shadow-sm">
+            <CardHeader className="pb-4">
+              <CardTitle className="flex items-center gap-2 text-base">
+                <Users className="h-4 w-4 text-primary" />
+                Attendees
+                {formData.attendees.length > 0 && (
+                  <Badge variant="secondary" className="ml-auto text-xs">
+                    {formData.attendees.length} selected
+                  </Badge>
+                )}
+              </CardTitle>
+              <CardDescription>Select team members to invite</CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              {/* Selected attendees chips */}
+              {formData.attendees.length > 0 && (
+                <div className="flex flex-wrap gap-2">
+                  {formData.attendees.map(id => {
+                    const u = users.find(u => u._id === id);
+                    if (!u) return null;
+                    return (
+                      <Badge
+                        key={id}
+                        variant="secondary"
+                        className="flex items-center gap-1.5 pr-1 py-1 bg-primary/10 text-primary border-primary/20"
+                      >
+                        <span className="w-5 h-5 rounded-full bg-primary/20 flex items-center justify-center text-[10px] font-semibold">
+                          {u.firstName?.[0]}{u.lastName?.[0]}
+                        </span>
+                        {u.firstName} {u.lastName}
+                        <button
+                          type="button"
+                          onClick={() => removeAttendee(id)}
+                          className="ml-0.5 p-0.5 hover:bg-primary/20 rounded-full transition-colors"
+                        >
+                          <X className="h-3 w-3" />
+                        </button>
+                      </Badge>
+                    );
+                  })}
+                </div>
+              )}
+
+              {/* Search */}
+              <div className="relative">
+                <Search className="absolute left-3 top-2.5 h-4 w-4 text-muted-foreground" />
+                <Input
+                  placeholder="Search team members..."
+                  value={searchUsers}
+                  onChange={e => setSearchUsers(e.target.value)}
+                  className="pl-9 bg-muted border-border text-foreground placeholder:text-muted-foreground"
                 />
               </div>
 
-              <div className="space-y-2">
-                <Label>
-                  Attendees
-                  <span className="text-slate-500 font-normal ml-2 text-sm">
-                    ({formData.attendees.length} selected — your team members only)
-                  </span>
-                </Label>
-                <div className="relative mb-2">
-                  <Search className="absolute left-3 top-2.5 h-4 w-4 text-slate-500" />
-                  <Input
-                    placeholder="Search team members..."
-                    value={searchUsers}
-                    onChange={e => setSearchUsers(e.target.value)}
-                    className="pl-9 bg-slate-800 border-slate-700"
-                  />
-                </div>
-                <div className="max-h-48 overflow-y-auto space-y-1 border border-slate-700 rounded-lg p-2 bg-slate-800/50">
-                  {filteredUsers.length === 0 ? (
-                    <p className="text-slate-500 text-sm text-center py-4">No team members found</p>
-                  ) : (
-                    filteredUsers.map((u) => (
+              {/* User list */}
+              <div className="max-h-48 overflow-y-auto space-y-1 border border-border rounded-lg p-2 bg-muted/30">
+                {filteredUsers.length === 0 ? (
+                  <p className="text-muted-foreground text-sm text-center py-4">No team members found</p>
+                ) : (
+                  filteredUsers.map((u) => {
+                    const isSelected = formData.attendees.includes(u._id);
+                    return (
                       <label
                         key={u._id}
-                        className="flex items-center gap-3 p-2 rounded-lg hover:bg-slate-700 cursor-pointer transition-colors"
+                        className={`flex items-center gap-3 p-2.5 rounded-lg cursor-pointer transition-all duration-150 ${
+                          isSelected
+                            ? 'bg-primary/10 border border-primary/20'
+                            : 'hover:bg-muted border border-transparent'
+                        }`}
                       >
                         <input
                           type="checkbox"
-                          checked={formData.attendees.includes(u._id)}
+                          checked={isSelected}
                           onChange={() => handleAttendeeChange(u._id)}
-                          className="rounded accent-blue-500"
+                          className="sr-only"
                         />
-                        <div className="flex items-center gap-2 flex-1">
-                          <div className="w-7 h-7 rounded-full bg-slate-600 flex items-center justify-center text-xs font-medium text-slate-200 shrink-0">
+                        <div className={`w-4 h-4 rounded border-2 flex items-center justify-center transition-colors ${
+                          isSelected ? 'bg-primary border-primary' : 'border-muted-foreground/40'
+                        }`}>
+                          {isSelected && <CheckCircle2 className="h-3 w-3 text-primary-foreground" />}
+                        </div>
+                        <div className="flex items-center gap-2.5 flex-1 min-w-0">
+                          <div className="w-8 h-8 rounded-full bg-muted flex items-center justify-center text-xs font-semibold text-muted-foreground shrink-0">
                             {u.firstName?.[0]}{u.lastName?.[0]}
                           </div>
-                          <div>
-                            <p className="text-sm text-slate-200 font-medium">
+                          <div className="min-w-0">
+                            <p className="text-sm text-foreground font-medium truncate">
                               {u.firstName} {u.lastName}
                             </p>
-                            <p className="text-xs text-slate-500">{u.role}</p>
+                            <p className="text-xs text-muted-foreground truncate">{u.role}</p>
                           </div>
                         </div>
                       </label>
-                    ))
-                  )}
-                </div>
+                    );
+                  })
+                )}
               </div>
+            </CardContent>
+          </Card>
 
-              <div className="flex gap-3 pt-2">
-                <Button
-                  type="button"
-                  variant="outline"
-                  className="border-slate-700"
-                  onClick={() => router.push('/meetings/history')}
-                >
-                  Cancel
-                </Button>
-                <Button type="submit" disabled={isLoading} className="flex-1">
-                  {isLoading ? (
-                    <><Loader2 className="mr-2 h-4 w-4 animate-spin" />Scheduling...</>
-                  ) : (
-                    'Schedule Meeting'
-                  )}
-                </Button>
-              </div>
-            </form>
-          </CardContent>
-        </Card>
+          {/* Actions */}
+          <div className="flex gap-3 pt-2 pb-8">
+            <Button
+              type="button"
+              variant="outline"
+              className="border-border text-foreground hover:bg-muted"
+              onClick={() => router.push('/meetings/history')}
+            >
+              Cancel
+            </Button>
+            <Button type="submit" disabled={isLoading} className="flex-1">
+              {isLoading ? (
+                <><Loader2 className="mr-2 h-4 w-4 animate-spin" />Scheduling...</>
+              ) : (
+                <>
+                  <Calendar className="mr-2 h-4 w-4" />
+                  Schedule Meeting
+                </>
+              )}
+            </Button>
+          </div>
+        </form>
       </div>
     </DashboardLayout>
   );
