@@ -1,6 +1,6 @@
 /** @type {import('next').NextConfig} */
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL;
+const API_URL = process.env.NEXT_PUBLIC_API_URL || "https://orgyx-backend.onrender.com";
 
 const nextConfig = {
   reactStrictMode: false,
@@ -12,7 +12,7 @@ const nextConfig = {
 
   env: {
     NEXT_PUBLIC_API_URL: API_URL,
-    NEXT_PUBLIC_SOCKET_URL: process.env.NEXT_PUBLIC_SOCKET_URL,
+    NEXT_PUBLIC_SOCKET_URL: process.env.NEXT_PUBLIC_SOCKET_URL || "https://orgyx-backend.onrender.com",
   },
 
   async rewrites() {
