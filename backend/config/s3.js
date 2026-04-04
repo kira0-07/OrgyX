@@ -38,14 +38,16 @@ const uploadFile = async (key, buffer, contentType) => {
   try {
     if (isLocalAuth) {
       // INTERCEPT: Local File saving
+      logger.info(`AWS Keys missing/default. Falling back to local upload: ${key}`);
       const localFilePath = path.join(BASE_UPLOAD_DIR, key);
       ensureDirectoryExists(localFilePath);
       
       await fs.promises.writeFile(localFilePath, buffer);
-      logger.info(`File saved locally successfully: ${key}`);
+      logger.info(`File saved locally successfully at: ${localFilePath}`);
       return { success: true, key };
     } else {
       // NATIVE: AWS S3 Upload
+      logger.info(`Uploading to S3 bucket: ${process.env.AWS_S3_BUCKET}, Key: ${key}`);
       const command = new PutObjectCommand({
         Bucket: process.env.AWS_S3_BUCKET,
         Key: key,
@@ -58,7 +60,8 @@ const uploadFile = async (key, buffer, contentType) => {
       return { success: true, key };
     }
   } catch (error) {
-    logger.error(`Error uploading file: ${error.message}`);
+    logger.error(`UPLOAD FAILURE: ${error.message}`);
+    if (error.stack) logger.error(error.stack);
     throw error;
   }
 };
