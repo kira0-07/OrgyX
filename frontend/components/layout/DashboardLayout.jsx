@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
 import { useAuth } from '@/context/AuthContext'
@@ -62,6 +62,14 @@ export default function DashboardLayout({ children }) {
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [userMenuOpen, setUserMenuOpen] = useState(false)
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
+  const mainRef = useRef(null)
+
+  // Reset scroll position on navigation
+  useEffect(() => {
+    if (mainRef.current) {
+      mainRef.current.scrollTop = 0
+    }
+  }, [pathname])
 
   useEffect(() => {
     fetchNotifications(50)
@@ -262,7 +270,7 @@ export default function DashboardLayout({ children }) {
           </div>
         </header>
 
-        <main className="flex-1 overflow-y-auto p-4 lg:p-8 bg-background">
+        <main ref={mainRef} className="flex-1 overflow-y-auto p-4 lg:p-8 bg-background scroll-smooth">
           <div className="mx-auto max-w-7xl animate-in fade-in duration-500">
             {children}
           </div>
