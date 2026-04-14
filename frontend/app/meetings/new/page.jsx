@@ -106,9 +106,12 @@ export default function NewMeetingPage() {
     <DashboardLayout>
       <div className="h-[calc(100vh-10rem)] flex flex-col min-h-[600px]">
         {/* Header */}
-        <div className="mb-6 shrink-0">
-          <h1 className="text-2xl font-bold tracking-tight text-foreground">Schedule a Meeting</h1>
-          <p className="text-muted-foreground">Set up a new meeting with your team members</p>
+        <div className="mb-6 shrink-0 flex justify-between items-end">
+          <div>
+            <h1 className="text-2xl font-bold tracking-tight text-foreground">Schedule a Meeting</h1>
+            <p className="text-muted-foreground">Set up a new meeting with your team members</p>
+          </div>
+          <Badge variant="outline" className="text-[10px] opacity-20 hover:opacity-100 transition-opacity">v1.2-SPLIT</Badge>
         </div>
 
         <form onSubmit={handleSubmit} className="flex-1 flex flex-col lg:flex-row gap-8 min-h-0">

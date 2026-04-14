@@ -270,8 +270,8 @@ export default function DashboardLayout({ children }) {
           </div>
         </header>
 
-        <main ref={mainRef} className="flex-1 overflow-y-auto overscroll-none p-4 lg:p-8 bg-background scroll-smooth">
-          <div className="mx-auto max-w-7xl animate-in fade-in duration-500">
+        <main ref={mainRef} className="flex-1 overflow-y-auto overscroll-none bg-background scroll-smooth flex flex-col">
+          <div className="mx-auto max-w-7xl w-full flex-1 flex flex-col p-4 lg:p-8 animate-in fade-in duration-500">
             {children}
           </div>
         </main>
