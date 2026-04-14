@@ -104,154 +104,157 @@ export default function NewMeetingPage() {
 
   return (
     <DashboardLayout>
-      <div className="max-w-3xl mx-auto space-y-6">
+      <div className="h-[calc(100vh-10rem)] flex flex-col min-h-[600px]">
         {/* Header */}
-        <div className="space-y-1">
+        <div className="mb-6 shrink-0">
           <h1 className="text-2xl font-bold tracking-tight text-foreground">Schedule a Meeting</h1>
           <p className="text-muted-foreground">Set up a new meeting with your team members</p>
         </div>
 
-        <form onSubmit={handleSubmit} className="space-y-6">
-          {/* Meeting Details Card */}
-          <Card className="bg-card border-border shadow-sm">
-            <CardHeader className="pb-4">
-              <CardTitle className="flex items-center gap-2 text-base">
-                <Calendar className="h-4 w-4 text-primary" />
-                Meeting Details
-              </CardTitle>
-              <CardDescription>Basic information about the meeting</CardDescription>
-            </CardHeader>
-            <CardContent className="space-y-5">
-              <div className="space-y-2">
-                <Label htmlFor="name" className="text-foreground">Meeting Name <span className="text-destructive">*</span></Label>
-                <Input
-                  id="name"
-                  placeholder="e.g. Sprint 14 Planning Session"
-                  value={formData.name}
-                  onChange={(e) => setFormData({ ...formData, name: e.target.value })}
-                  className="bg-muted border-border text-foreground placeholder:text-muted-foreground"
-                  required
-                />
-              </div>
-
-              <div className="space-y-2">
-                <Label htmlFor="description" className="text-foreground">Description</Label>
-                <Textarea
-                  id="description"
-                  placeholder="Brief description of the meeting objectives..."
-                  value={formData.description}
-                  onChange={(e) => setFormData({ ...formData, description: e.target.value })}
-                  className="bg-muted border-border text-foreground placeholder:text-muted-foreground resize-none"
-                  rows={3}
-                />
-              </div>
-
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+        <form onSubmit={handleSubmit} className="flex-1 flex flex-col lg:flex-row gap-8 min-h-0">
+          {/* Left Column (60%) - Scrollable Form Details */}
+          <div className="flex-[1.5] overflow-y-auto pr-4 space-y-6 custom-scrollbar">
+            {/* Meeting Details Card */}
+            <Card className="bg-card border-border shadow-sm">
+              <CardHeader className="pb-4">
+                <CardTitle className="flex items-center gap-2 text-base">
+                  <Calendar className="h-4 w-4 text-primary" />
+                  Meeting Details
+                </CardTitle>
+                <CardDescription>Basic information about the meeting</CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-5">
                 <div className="space-y-2">
-                  <Label htmlFor="scheduledDate" className="text-foreground flex items-center gap-1.5">
-                    <Clock className="h-3.5 w-3.5 text-muted-foreground" />
-                    Date & Time <span className="text-destructive">*</span>
-                  </Label>
+                  <Label htmlFor="name" className="text-foreground">Meeting Name <span className="text-destructive">*</span></Label>
                   <Input
-                    id="scheduledDate"
-                    type="datetime-local"
-                    value={formData.scheduledDate}
-                    onChange={(e) => setFormData({ ...formData, scheduledDate: e.target.value })}
-                    className="bg-muted border-border text-foreground"
+                    id="name"
+                    placeholder="e.g. Sprint 14 Planning Session"
+                    value={formData.name}
+                    onChange={(e) => setFormData({ ...formData, name: e.target.value })}
+                    className="bg-muted border-border text-foreground placeholder:text-muted-foreground"
                     required
                   />
                 </div>
+
                 <div className="space-y-2">
-                  <Label htmlFor="estimatedDuration" className="text-foreground">Duration (minutes)</Label>
-                  <Input
-                    id="estimatedDuration"
-                    type="number"
-                    min="1"
-                    value={formData.estimatedDuration}
-                    onChange={(e) => setFormData({ ...formData, estimatedDuration: e.target.value })}
-                    className="bg-muted border-border text-foreground"
+                  <Label htmlFor="description" className="text-foreground">Description</Label>
+                  <Textarea
+                    id="description"
+                    placeholder="Brief description of the meeting objectives..."
+                    value={formData.description}
+                    onChange={(e) => setFormData({ ...formData, description: e.target.value })}
+                    className="bg-muted border-border text-foreground placeholder:text-muted-foreground resize-none"
+                    rows={3}
                   />
                 </div>
-              </div>
-            </CardContent>
-          </Card>
 
-          {/* Domain Selection Card */}
-          <Card className="bg-card border-border shadow-sm">
-            <CardHeader className="pb-4">
-              <CardTitle className="flex items-center gap-2 text-base">
-                <LayoutGrid className="h-4 w-4 text-primary" />
-                Meeting Type
-              </CardTitle>
-              <CardDescription>Select the domain for this meeting</CardDescription>
-            </CardHeader>
-            <CardContent>
-              <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
-                {meetingDomains.map((domain) => (
-                  <button
-                    key={domain.value}
-                    type="button"
-                    onClick={() => setFormData({ ...formData, domain: domain.value })}
-                    className={`flex items-center gap-2.5 p-3 rounded-lg border-2 transition-all duration-200 text-left ${
-                      formData.domain === domain.value
-                        ? 'border-primary bg-primary/10 shadow-sm'
-                        : 'border-border bg-muted/50 hover:border-muted-foreground/30 hover:bg-muted'
-                    }`}
-                  >
-                    <span className="text-lg">{domain.icon}</span>
-                    <span className={`text-sm font-medium ${
-                      formData.domain === domain.value ? 'text-primary' : 'text-foreground'
-                    }`}>
-                      {domain.value}
-                    </span>
-                  </button>
-                ))}
-              </div>
-            </CardContent>
-          </Card>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  <div className="space-y-2">
+                    <Label htmlFor="scheduledDate" className="text-foreground flex items-center gap-1.5">
+                      <Clock className="h-3.5 w-3.5 text-muted-foreground" />
+                      Date & Time <span className="text-destructive">*</span>
+                    </Label>
+                    <Input
+                      id="scheduledDate"
+                      type="datetime-local"
+                      value={formData.scheduledDate}
+                      onChange={(e) => setFormData({ ...formData, scheduledDate: e.target.value })}
+                      className="bg-muted border-border text-foreground"
+                      required
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="estimatedDuration" className="text-foreground">Duration (minutes)</Label>
+                    <Input
+                      id="estimatedDuration"
+                      type="number"
+                      min="1"
+                      value={formData.estimatedDuration}
+                      onChange={(e) => setFormData({ ...formData, estimatedDuration: e.target.value })}
+                      className="bg-muted border-border text-foreground"
+                    />
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
 
-          {/* Agenda & Link Card */}
-          <Card className="bg-card border-border shadow-sm">
-            <CardHeader className="pb-4">
-              <CardTitle className="flex items-center gap-2 text-base">
-                <Video className="h-4 w-4 text-primary" />
-                Agenda & Links
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-5">
-              <div className="space-y-2">
-                <Label htmlFor="agenda" className="text-foreground">Agenda</Label>
-                <Textarea
-                  id="agenda"
-                  value={formData.agenda}
-                  onChange={(e) => setFormData({ ...formData, agenda: e.target.value })}
-                  className="bg-muted border-border text-foreground placeholder:text-muted-foreground resize-none"
-                  rows={3}
-                  placeholder="• Topic 1&#10;• Topic 2&#10;• Topic 3"
-                />
-              </div>
+            {/* Domain Selection Card */}
+            <Card className="bg-card border-border shadow-sm">
+              <CardHeader className="pb-4">
+                <CardTitle className="flex items-center gap-2 text-base">
+                  <LayoutGrid className="h-4 w-4 text-primary" />
+                  Meeting Type
+                </CardTitle>
+                <CardDescription>Select the domain for this meeting</CardDescription>
+              </CardHeader>
+              <CardContent>
+                <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+                  {meetingDomains.map((domain) => (
+                    <button
+                      key={domain.value}
+                      type="button"
+                      onClick={() => setFormData({ ...formData, domain: domain.value })}
+                      className={`flex items-center gap-2.5 p-3 rounded-lg border-2 transition-all duration-200 text-left ${
+                        formData.domain === domain.value
+                          ? 'border-primary bg-primary/10 shadow-sm'
+                          : 'border-border bg-muted/50 hover:border-muted-foreground/30 hover:bg-muted'
+                      }`}
+                    >
+                      <span className="text-lg">{domain.icon}</span>
+                      <span className={`text-sm font-medium ${
+                        formData.domain === domain.value ? 'text-primary' : 'text-foreground'
+                      }`}>
+                        {domain.value}
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              </CardContent>
+            </Card>
 
-              <div className="space-y-2">
-                <Label htmlFor="externalLink" className="text-foreground flex items-center gap-1.5">
-                  <Link2 className="h-3.5 w-3.5 text-muted-foreground" />
-                  External Link
-                  <span className="text-xs text-muted-foreground font-normal">(Optional)</span>
-                </Label>
-                <Input
-                  id="externalLink"
-                  type="url"
-                  placeholder="https://zoom.us/j/..."
-                  value={formData.externalLink}
-                  onChange={(e) => setFormData({ ...formData, externalLink: e.target.value })}
-                  className="bg-muted border-border text-foreground placeholder:text-muted-foreground"
-                />
-              </div>
-            </CardContent>
-          </Card>
+            {/* Agenda & Link Card */}
+            <Card className="bg-card border-border shadow-sm">
+              <CardHeader className="pb-4">
+                <CardTitle className="flex items-center gap-2 text-base">
+                  <Video className="h-4 w-4 text-primary" />
+                  Agenda & Links
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-5">
+                <div className="space-y-2">
+                  <Label htmlFor="agenda" className="text-foreground">Agenda</Label>
+                  <Textarea
+                    id="agenda"
+                    value={formData.agenda}
+                    onChange={(e) => setFormData({ ...formData, agenda: e.target.value })}
+                    className="bg-muted border-border text-foreground placeholder:text-muted-foreground resize-none"
+                    rows={3}
+                    placeholder="• Topic 1&#10;• Topic 2&#10;• Topic 3"
+                  />
+                </div>
 
-          {/* Attendees Card */}
-          <Card className="bg-card border-border shadow-sm">
-            <CardHeader className="pb-4">
+                <div className="space-y-2">
+                  <Label htmlFor="externalLink" className="text-foreground flex items-center gap-1.5">
+                    <Link2 className="h-3.5 w-3.5 text-muted-foreground" />
+                    External Link
+                    <span className="text-xs text-muted-foreground font-normal">(Optional)</span>
+                  </Label>
+                  <Input
+                    id="externalLink"
+                    type="url"
+                    placeholder="https://zoom.us/j/..."
+                    value={formData.externalLink}
+                    onChange={(e) => setFormData({ ...formData, externalLink: e.target.value })}
+                    className="bg-muted border-border text-foreground placeholder:text-muted-foreground"
+                  />
+                </div>
+              </CardContent>
+            </Card>
+          </div>
+
+          {/* Right Column (40%) - Attendees (Fixed with internal scroll) */}
+          <div className="flex-1 flex flex-col h-full min-h-0 bg-card border border-border rounded-xl shadow-sm overflow-hidden">
+            <CardHeader className="pb-4 shrink-0">
               <CardTitle className="flex items-center gap-2 text-base">
                 <Users className="h-4 w-4 text-primary" />
                 Attendees
@@ -263,10 +266,11 @@ export default function NewMeetingPage() {
               </CardTitle>
               <CardDescription>Select team members to invite</CardDescription>
             </CardHeader>
-            <CardContent className="space-y-4">
+
+            <div className="flex-1 flex flex-col min-h-0 px-6 overflow-hidden">
               {/* Selected attendees chips */}
               {formData.attendees.length > 0 && (
-                <div className="flex flex-wrap gap-2">
+                <div className="flex flex-wrap gap-2 mb-4 max-h-24 overflow-y-auto pt-1 shrink-0">
                   {formData.attendees.map(id => {
                     const u = users.find(u => u._id === id);
                     if (!u) return null;
@@ -276,14 +280,14 @@ export default function NewMeetingPage() {
                         variant="secondary"
                         className="flex items-center gap-1.5 pr-1 py-1 bg-primary/10 text-primary border-primary/20"
                       >
-                        <span className="w-5 h-5 rounded-full bg-primary/20 flex items-center justify-center text-[10px] font-semibold">
+                        <span className="w-5 h-5 rounded-full bg-primary/20 flex items-center justify-center text-[10px] font-semibold text-primary">
                           {u.firstName?.[0]}{u.lastName?.[0]}
                         </span>
                         {u.firstName} {u.lastName}
                         <button
                           type="button"
                           onClick={() => removeAttendee(id)}
-                          className="ml-0.5 p-0.5 hover:bg-primary/20 rounded-full transition-colors"
+                          className="ml-0.5 p-0.5 hover:bg-primary/30 rounded-full transition-colors"
                         >
                           <X className="h-3 w-3" />
                         </button>
@@ -294,7 +298,7 @@ export default function NewMeetingPage() {
               )}
 
               {/* Search */}
-              <div className="relative">
+              <div className="relative shrink-0 mb-4">
                 <Search className="absolute left-3 top-2.5 h-4 w-4 text-muted-foreground" />
                 <Input
                   placeholder="Search team members..."
@@ -304,19 +308,19 @@ export default function NewMeetingPage() {
                 />
               </div>
 
-              {/* User list */}
-              <div className="h-[240px] overflow-y-auto overscroll-none space-y-1 border border-border rounded-lg p-2 bg-muted/30">
+              {/* User list - Scrollable part of the right column */}
+              <div className="flex-1 overflow-y-auto space-y-1 mb-6 custom-scrollbar pr-2">
                 {filteredUsers.length === 0 ? (
-                  <p className="text-muted-foreground text-sm text-center py-4">No team members found</p>
+                  <p className="text-muted-foreground text-sm text-center py-8 bg-muted/20 rounded-lg">No team members found</p>
                 ) : (
                   filteredUsers.map((u) => {
                     const isSelected = formData.attendees.includes(u._id);
                     return (
                       <label
                         key={u._id}
-                        className={`flex items-center gap-3 p-2.5 rounded-lg cursor-pointer transition-all duration-150 ${
+                        className={`flex items-center gap-3 p-3 rounded-lg cursor-pointer transition-all duration-150 ${
                           isSelected
-                            ? 'bg-primary/10 border border-primary/20'
+                            ? 'bg-primary/10 border border-primary/20 shadow-sm'
                             : 'hover:bg-muted border border-transparent'
                         }`}
                       >
@@ -326,20 +330,20 @@ export default function NewMeetingPage() {
                           onChange={() => handleAttendeeChange(u._id)}
                           className="sr-only"
                         />
-                        <div className={`w-4 h-4 rounded border-2 flex items-center justify-center transition-colors ${
+                        <div className={`w-5 h-5 rounded-md border-2 flex items-center justify-center transition-colors shrink-0 ${
                           isSelected ? 'bg-primary border-primary' : 'border-muted-foreground/40'
                         }`}>
-                          {isSelected && <CheckCircle2 className="h-3 w-3 text-primary-foreground" />}
+                          {isSelected && <CheckCircle2 className="h-3.5 w-3.5 text-primary-foreground" />}
                         </div>
-                        <div className="flex items-center gap-2.5 flex-1 min-w-0">
-                          <div className="w-8 h-8 rounded-full bg-muted flex items-center justify-center text-xs font-semibold text-muted-foreground shrink-0">
+                        <div className="flex items-center gap-3 flex-1 min-w-0">
+                          <div className="w-9 h-9 rounded-full bg-muted border border-border flex items-center justify-center text-xs font-semibold text-muted-foreground shrink-0 uppercase">
                             {u.firstName?.[0]}{u.lastName?.[0]}
                           </div>
                           <div className="min-w-0">
-                            <p className="text-sm text-foreground font-medium truncate">
+                            <p className="text-sm font-medium text-foreground truncate">
                               {u.firstName} {u.lastName}
                             </p>
-                            <p className="text-xs text-muted-foreground truncate">{u.role}</p>
+                            <p className="text-[11px] text-muted-foreground truncate uppercase tracking-wider">{u.role}</p>
                           </div>
                         </div>
                       </label>
@@ -347,29 +351,31 @@ export default function NewMeetingPage() {
                   })
                 )}
               </div>
-            </CardContent>
-          </Card>
+            </div>
 
-          {/* Actions */}
-          <div className="flex gap-3 pt-2 pb-8">
-            <Button
-              type="button"
-              variant="outline"
-              className="border-border text-foreground hover:bg-muted"
-              onClick={() => router.push('/meetings/history')}
-            >
-              Cancel
-            </Button>
-            <Button type="submit" disabled={isLoading} className="flex-1">
-              {isLoading ? (
-                <><Loader2 className="mr-2 h-4 w-4 animate-spin" />Scheduling...</>
-              ) : (
-                <>
-                  <Calendar className="mr-2 h-4 w-4" />
-                  Schedule Meeting
-                </>
-              )}
-            </Button>
+            {/* Footer Actions - Sticky within the right column or spanning bottom */}
+            <div className="p-6 border-t border-border bg-surface shrink-0 mt-auto">
+              <div className="flex gap-3">
+                <Button
+                  type="button"
+                  variant="outline"
+                  className="border-border text-foreground hover:bg-muted shrink-0"
+                  onClick={() => router.push('/meetings/history')}
+                >
+                  Cancel
+                </Button>
+                <Button type="submit" disabled={isLoading} className="flex-1 shadow-lg shadow-primary/20">
+                  {isLoading ? (
+                    <><Loader2 className="mr-2 h-4 w-4 animate-spin" />Scheduling...</>
+                  ) : (
+                    <>
+                      <Calendar className="mr-2 h-4 w-4" />
+                      Schedule Meeting
+                    </>
+                  )}
+                </Button>
+              </div>
+            </div>
           </div>
         </form>
       </div>
