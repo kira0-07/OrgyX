@@ -305,7 +305,7 @@ export default function NewMeetingPage() {
               </div>
 
               {/* User list */}
-              <div className="max-h-[320px] overflow-y-auto overscroll-contain space-y-1 border border-border rounded-lg p-2 bg-muted/30">
+              <div className="h-[240px] overflow-y-auto overscroll-none space-y-1 border border-border rounded-lg p-2 bg-muted/30">
                 {filteredUsers.length === 0 ? (
                   <p className="text-muted-foreground text-sm text-center py-4">No team members found</p>
                 ) : (
