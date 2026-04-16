@@ -252,12 +252,6 @@ export default function MeetingRoom({ meetingId, user }) {
       const recorder = new MediaRecorder(audioOnly, { mimeType });
       myChunksRef.current = [];
       myRecordingStartTimeRef.current = Date.now();
-      // ── FIX: Track init segment separately ──────────────────────────────
-      // The first ondataavailable chunk from MediaRecorder contains the WebM
-      // initialization segment (codec headers). Without it, standalone blobs
-      // from subsequent intervals are unplayable. We capture it once and
-      // prepend it to every interval blob so each uploaded chunk is a valid
-      // self-contained WebM file.
       let initSegment = null;
       let isFirstChunk = true;
       recorder.ondataavailable = e => {
@@ -273,8 +267,6 @@ export default function MeetingRoom({ meetingId, user }) {
         if (!myChunksRef.current.length) return;
         const chunks = [...myChunksRef.current];
         myChunksRef.current = [];
-        // Prepend init segment to every blob except the first
-        // (first blob already contains it naturally)
         const blobChunks = (initSegment && chunks[0] !== initSegment)
           ? [initSegment, ...chunks]
           : chunks;
@@ -417,7 +409,7 @@ export default function MeetingRoom({ meetingId, user }) {
 
   const createPeer = (userId, initiator, stream, incomingOffer = null) => {
     if (peersRef.current[userId]) { try { peersRef.current[userId].destroy(); } catch (_) { } delete peersRef.current[userId]; }
-    const peer = new SimplePeer({ initiator, trickle: true, stream, config: { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }, { urls: 'stun:stun1.l.google.com:19302' }, { urls: 'turn:autorack.proxy.rlwy.net:26677', username: 'catalyst', credential: 'catalyst123' }, { urls: 'turn:autorack.proxy.rlwy.net:26677?transport=tcp', username: 'catalyst', credential: 'catalyst123' }, { urls: 'turn:openrelay.metered.ca:443?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' }] } });
+    const peer = new SimplePeer({ initiator, trickle: true, stream, config: { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }, { urls: 'stun:stun1.l.google.com:19302' }, { urls: 'turn:mainline.proxy.rlwy.net:10424', username: 'catalyst', credential: 'catalyst123' }, { urls: 'turn:mainline.proxy.rlwy.net:10424?transport=tcp', username: 'catalyst', credential: 'catalyst123' }, { urls: 'turn:openrelay.metered.ca:443?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' }] } });
     peer.on('signal', data => { if (!socketRef.current) return; if (data.type === 'offer') socketRef.current.emit('offer', { meetingId, offer: data, targetUserId: userId }); else if (data.type === 'answer') socketRef.current.emit('answer', { meetingId, answer: data, targetUserId: userId }); else if (data.candidate) socketRef.current.emit('ice-candidate', { meetingId, candidate: data, targetUserId: userId }); });
     peer.on('stream', remoteStream => {
       setRemoteStreams(prev => ({ ...prev, [userId]: remoteStream }));
